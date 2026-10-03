@@ -226,7 +226,6 @@ func run(dataDir, libDir, sock string) {
 	var eng *core.Engine
 	e := core.NewEngine(core.Options{
 		DataDir: dataDir, AssetDir: dataDir, TunName: "tun0", Platform: "android",
-		BindIface: os.Getenv("VPN_IFACE"),
 		LogLevel:  logLevel(dataDir, os.Getenv("VPN_DIAG_DIR")),
 		ErrorLog: xrayLog, AccessLog: accessLog(dataDir, os.Getenv("VPN_DIAG_DIR")),
 		Bypass:   bp, Logf: logf,
@@ -290,9 +289,6 @@ func run(dataDir, libDir, sock string) {
 				parts := strings.Fields(c[4:])
 				if len(parts) > 0 {
 					os.Setenv("VPN_NETKEY", parts[0])
-				}
-				if len(parts) > 1 && parts[1] != "" {
-					e.SetBindIface(parts[1])
 				}
 				e.Kick()
 			}

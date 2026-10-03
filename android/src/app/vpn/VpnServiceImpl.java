@@ -77,16 +77,6 @@ public class VpnServiceImpl extends VpnService {
             // папка для диагностики (Android/data/app.vpn/files): ядро копирует туда логи, читается по adb без root
             java.io.File diag = getExternalFilesDir(null);
             if (diag != null) pb.environment().put("VPN_DIAG_DIR", diag.getAbsolutePath());
-            ConnectivityManager cm = getSystemService(ConnectivityManager.class);
-            if (cm != null) {
-                Network act = cm.getActiveNetwork();
-                if (act != null) {
-                    android.net.LinkProperties lp = cm.getLinkProperties(act);
-                    if (lp != null && lp.getInterfaceName() != null) {
-                        pb.environment().put("VPN_IFACE", lp.getInterfaceName());
-                    }
-                }
-            }
             core = pb.start();
             coreIn = core.getOutputStream();
             captureErr();
@@ -188,12 +178,7 @@ public class VpnServiceImpl extends VpnService {
                 long now = System.currentTimeMillis();
                 if (k == lastKey && now - lastAt < 3000) return;
                 lastKey = k; lastAt = now;
-                String iface = "";
-                if (n != null && cm != null) {
-                    android.net.LinkProperties lp = cm.getLinkProperties(n);
-                    if (lp != null && lp.getInterfaceName() != null) iface = lp.getInterfaceName();
-                }
-                toCore("net " + k + (iface.isEmpty() ? "" : " " + iface));
+                toCore("net " + k);
             }
         };
         try { cm.registerDefaultNetworkCallback(netCb); } catch (Exception ignore) {}

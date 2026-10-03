@@ -33,7 +33,7 @@ func (e *Engine) buildConfig() obj {
 	// БЕЗ tcpFastOpen: провайдер (СПб, 2026-09) режет TCP с данными в SYN — с TFO не работал ни VLESS,
 	// ни прямой DoH, живым оставался только UDP (Hysteria2) — отсюда видео YouTube по 2-3 минуты.
 	sockopt := obj{}
-	if e.opt.BindIface != "" {
+	if e.opt.Platform != "android" && e.opt.BindIface != "" {
 		sockopt["interface"] = e.opt.BindIface
 	}
 	reality := obj{"serverName": p.SNI, "fingerprint": "chrome", "publicKey": p.PublicKey, "shortId": p.ShortID, "spiderX": "/"}
