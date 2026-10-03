@@ -219,6 +219,41 @@ func run(dataDir, libDir, sock string) {
 		emit(map[string]any{"state": "off", "error": "Не удалось запустить VPN"})
 		os.Exit(1)
 	}
+	singboxBin := filepath.Join(libDir, "libsingbox.so")
+	if _, err := os.Stat(singboxBin); err == nil {
+		logf("starting sing-box core...")
+		runner, err := startSingbox(dataDir, libDir, tunFd, p, logf)
+		if err != nil {
+			log.Print("start singbox: ", err)
+			emit(map[string]any{"state": "off", "error": "Не удалось запустить VPN"})
+			os.Exit(1)
+		}
+		emit(core.State{State: "on", Detail: "Германия · sing-box", TCP: "vless", UDP: "hy2"})
+
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+		cmds := make(chan string)
+		go func() {
+			sc := bufio.NewScanner(os.Stdin)
+			for sc.Scan() {
+				cmds <- sc.Text()
+			}
+			close(cmds)
+		}()
+		for {
+			select {
+			case <-sig:
+				runner.stop()
+				return
+			case c, ok := <-cmds:
+				if !ok || c == "stop" {
+					runner.stop()
+					return
+				}
+			}
+		}
+	}
+
 	var curFd = -1
 	xrayLog := filepath.Join(dataDir, "xray.log")
 	os.Remove(xrayLog)

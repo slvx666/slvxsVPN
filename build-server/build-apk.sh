@@ -8,6 +8,7 @@ cd /root/build/app
 GOOS=android GOARCH=arm64 CGO_ENABLED=0 nice go build -trimpath -ldflags "-s -w -buildid=" -o /root/build/libvpncore.so ./cmd/androidcore
 cd /root/build/android
 cp /root/build/libvpncore.so lib/arm64-v8a/
+[ -f /root/build/sing-box-arm64 ] && cp /root/build/sing-box-arm64 lib/arm64-v8a/libsingbox.so
 cp /root/build/app/ui/index.html assets/index.html
 sed -i "s/<application android:debuggable=\"true\"/<application/" AndroidManifest.xml
 [ "$DEBUG" = 1 ] && sed -i "s/<application/<application android:debuggable=\"true\"/" AndroidManifest.xml
@@ -22,7 +23,7 @@ $BT/aapt2 link -o bin/base.apk -I $AJ --manifest AndroidManifest.xml --java gen 
 javac -source 8 -target 8 -cp $AJ -d obj $(find src gen -name "*.java") 2>&1 | grep -vE "Note:|warning|deprecat" || true
 rm -f bin/classes.dex
 $BT/d8 --release --min-api 24 --lib $AJ --output bin $(find obj -name "*.class")
-cp bin/base.apk bin/unsigned.apk && ( cd bin && zip -q unsigned.apk classes.dex ) && zip -q bin/unsigned.apk lib/arm64-v8a/libvpncore.so lib/arm64-v8a/libbyedpi.so
+cp bin/base.apk bin/unsigned.apk && ( cd bin && zip -q unsigned.apk classes.dex ) && zip -q bin/unsigned.apk lib/arm64-v8a/*
 $BT/zipalign -f -p 4 bin/unsigned.apk bin/aligned.apk
 KSPASS=$(cat /root/build/android/keystore.pass | head -n 1)
 $BT/apksigner sign --ks vpn.keystore --ks-key-alias vpn --ks-pass "pass:$KSPASS" --key-pass "pass:$KSPASS" --out bin/VPN.apk bin/aligned.apk
