@@ -1,0 +1,15 @@
+# исходники Xray-core v26.3.27 с нашими правками — копия с сервера (правки также в patches/)
+xray-src/
+# сборки и логи
+releases/
+logs/
+*.apk
+app/cmd/vpn/*.exe
+# секреты никогда не кладём сюда: users.json, monitor.env, SUBSCRIPTIONS.txt, links.json, clash/, vpn.keystore, keystore.pass
+users.json
+monitor.env
+SUBSCRIPTIONS.txt
+links.json
+*.keystore
+keystore.pass
+__pycache__/

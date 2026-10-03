@@ -1,0 +1,7 @@
+# всё в LF: файлы уходят на Linux-сервер (скрипты с CRLF там не запускаются)
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.syso binary
+*.dll binary
+*.so binary

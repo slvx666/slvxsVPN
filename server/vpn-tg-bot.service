@@ -1,0 +1,16 @@
+[Unit]
+Description=VPN Telegram Control and Build Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/vpn
+ExecStart=/usr/bin/python3 /root/vpn/tg_bot.py
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

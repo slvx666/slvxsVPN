@@ -1,0 +1,119 @@
+diff --git a/app/dns/fakedns/fake.go b/app/dns/fakedns/fake.go
+index 33bf63c..65fa258 100644
+--- a/app/dns/fakedns/fake.go
++++ b/app/dns/fakedns/fake.go
+@@ -26,10 +26,16 @@ func (fkdns *Holder) IsIPInIPPool(ip net.Address) bool {
+ 	if ip.Family().IsDomain() {
+ 		return false
+ 	}
++	if fkdns.ipRange == nil { // ещё не инициализирован или уже закрыт (перезапуск ядра)
++		return false
++	}
+ 	return fkdns.ipRange.Contains(ip.IP())
+ }
+ 
+ func (fkdns *Holder) GetFakeIPForDomain3(domain string, ipv4, ipv6 bool) []net.Address {
++	if fkdns.ipRange == nil {
++		return []net.Address{}
++	}
+ 	isIPv6 := fkdns.ipRange.IP.To4() == nil
+ 	if (isIPv6 && ipv6) || (!isIPv6 && ipv4) {
+ 		return fkdns.GetFakeIPForDomain(domain)
+@@ -98,6 +104,9 @@ func (fkdns *Holder) initialize(ipPoolCidr string, lruSize int) error {
+ 
+ // GetFakeIPForDomain checks and generates a fake IP for a domain name
+ func (fkdns *Holder) GetFakeIPForDomain(domain string) []net.Address {
++	if fkdns.mu == nil || fkdns.domainToIP == nil || fkdns.ipRange == nil {
++		return []net.Address{}
++	}
+ 	fkdns.mu.Lock()
+ 	defer fkdns.mu.Unlock()
+ 	if v, ok := fkdns.domainToIP.Get(domain); ok {
+@@ -131,6 +140,9 @@ func (fkdns *Holder) GetFakeIPForDomain(domain string) []net.Address {
+ 
+ // GetDomainFromFakeDNS checks if an IP is a fake IP and have corresponding domain name
+ func (fkdns *Holder) GetDomainFromFakeDNS(ip net.Address) string {
++	if fkdns.ipRange == nil || fkdns.domainToIP == nil { // не инициализирован / закрыт при перезапуске ядра
++		return ""
++	}
+ 	if !ip.Family().IsIP() || !fkdns.ipRange.Contains(ip.IP()) {
+ 		return ""
+ 	}
+diff --git a/app/proxyman/inbound/always.go b/app/proxyman/inbound/always.go
+index a1cb7b7..0734f0a 100644
+--- a/app/proxyman/inbound/always.go
++++ b/app/proxyman/inbound/always.go
+@@ -186,6 +186,9 @@ func (h *AlwaysOnInboundHandler) Close() error {
+ 		errs = append(errs, worker.Close())
+ 	}
+ 	errs = append(errs, h.mux.Close())
++	if c, ok := h.proxy.(common.Closable); ok {
++		errs = append(errs, c.Close())
++	}
+ 	if err := errors.Combine(errs...); err != nil {
+ 		return errors.New("failed to close all resources").Base(err)
+ 	}
+diff --git a/proxy/tun/handler.go b/proxy/tun/handler.go
+index 31fc43c..cd9cc58 100644
+--- a/proxy/tun/handler.go
++++ b/proxy/tun/handler.go
+@@ -2,6 +2,7 @@ package tun
+ 
+ import (
+ 	"context"
++	"runtime/debug"
+ 
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+@@ -102,6 +103,13 @@ func (t *Handler) Init(ctx context.Context, pm policy.Manager, dispatcher routin
+ 
+ // HandleConnection pass the connection coming from the ip stack to the routing dispatcher
+ func (t *Handler) HandleConnection(conn net.Conn, destination net.Destination) {
++	// защита: паника при обработке одного пакета/соединения не должна ронять весь процесс (весь VPN).
++	// Печатаем стек в лог (stderr) и продолжаем — соединение просто закрывается.
++	defer func() {
++		if r := recover(); r != nil {
++			errors.LogError(t.ctx, errors.New("tun HandleConnection panic to ", destination, ": ", r, "\n", string(debug.Stack())))
++		}
++	}()
+ 	// when handling is done with any outcome, always signal back to the incoming connection
+ 	// to close, send completion packets back to the network, and cleanup
+ 	defer conn.Close()
+@@ -157,6 +165,15 @@ func (t *Handler) Process(ctx context.Context, network net.Network, conn stat.Co
+ 	return nil
+ }
+ 
++func (t *Handler) Close() error {
++	if t.stack != nil {
++		err := t.stack.Close()
++		t.stack = nil
++		return err
++	}
++	return nil
++}
++
+ func init() {
+ 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+ 		t := &Handler{config: config.(*Config)}
+diff --git a/proxy/tun/udp_fullcone.go b/proxy/tun/udp_fullcone.go
+index df58ce4..f3037e9 100644
+--- a/proxy/tun/udp_fullcone.go
++++ b/proxy/tun/udp_fullcone.go
+@@ -40,13 +40,14 @@ func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destina
+ 
+ 		go u.handleConnection(conn, dst)
+ 	}
+-	u.Unlock()
+-
+-	// send packet data to the egress channel, if it has buffer, or discard
++	// отправляем под тем же замком, под которым connectionFinished закрывает канал —
++	// иначе гонка: пакет уходит в уже закрытый egress -> panic "send on closed channel" (роняет весь процесс).
++	// Отправка неблокирующая (буфер + default), поэтому держать замок безопасно.
+ 	select {
+ 	case conn.egress <- data:
+ 	default:
+ 	}
++	u.Unlock()
+ 
+ 	return true
+ }

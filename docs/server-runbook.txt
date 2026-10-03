@@ -1,0 +1,110 @@
+VPN на Xray: три протокола, подписки, лимиты скорости
+=====================================================
+
+Протоколы (все на порту 443, лимиты скорости действуют на каждом)
+  VLESS + Reality + Vision   TCP 443  основной: самый быстрый, стабильный в РФ
+  VLESS + XHTTP + Reality    TCP 443  запасной (fallback с основного инбаунда на 127.0.0.1:10444), устойчивее к DPI
+  Hysteria2 + Salamander     UDP 443  для игр и звонков: UDP без «пробок» TCP, меньше выбросов пинга
+                                      (сертификат — Let's Encrypt, Xray перечитывает его сам раз в час)
+
+Клиенты
+  ПК:      Clash Verge Rev — подписка отдаёт готовый профиль (clash/<имя>.yaml):
+           автопереключение VLESS → XHTTP → Hysteria2, российские сайты/IP напрямую,
+           UDP (игры, звонки) — отдельная группа «🎮 Игры и звонки», QUIC через туннель отклоняется.
+  Телефон: Happ / v2RayTun / Hiddify — подписка отдаёт три ссылки (base64).
+  Формат выбирается по User-Agent (clash/mihomo/stash → YAML, браузер → страница, остальные → base64).
+
+Файлы
+  users.json         — всё хозяйство: IP, ключи, пароли, пользователи (лимит, токен подписки)
+  build.py           — генерирует xray config, shaper.sh, links.json, clash/*.yaml, SUBSCRIPTIONS.txt
+  subserver.py       — отдаёт подписки (127.0.0.1:8081, снаружи nginx https://IP:8443/sub/<token>)
+  shaper.sh          — лимиты скорости (tc HTB + connmark) + NAT прыжков портов hy2, сервис vpn-shaper
+  SUBSCRIPTIONS.txt  — готовые ссылки для раздачи
+
+Добавить/изменить пользователя
+  1. Правим users.json (limit_mbit=0 и mark=0 — безлимит; иначе mark = уникальное число 101..999)
+  2. python3 /root/vpn/build.py && systemctl restart xray vpn-shaper
+
+Особенности, найденные при настройке (Xray 26.3.27, mihomo 1.19.31)
+  * У Hysteria-инбаунда пользователи задаются полем "clients" (в свежей документации — "users",
+    в 26.3 такое поле молча игнорируется -> "auth failed").
+  * policy.system.statsInbound* НЕ включать: соединение оборачивается счётчиком, Hysteria2 теряет
+    пользователя -> не работают лимиты скорости и статистика.
+  * Прыжки портов hy2 (UDP 20000-40000 -> 443, правило в shaper.sh) сервер поддерживает, и клиент
+    на ядре Xray прыгает без потерь. А в mihomo после первого прыжка теряется 50-75% UDP-пакетов,
+    поэтому в профилях и ссылках прыжки выключены.
+
+Диагностика ПК (Windows)
+  Пользователь вставляет в PowerShell (подставить свой токен):
+    [Net.ServicePointManager]::SecurityProtocol='Tls12';$w=New-Object Net.WebClient;$w.Encoding=[Text.Encoding]::UTF8;iex $w.DownloadString('https://<IP>:8443/sub/<token>/diag.ps1')
+  Скрипт (diag.ps1) собирает настройки Clash Verge (пароли скрыты), сеть ПК, мешающие программы, проверяет сайты,
+  затем просит закрыть Clash Verge и тестирует каждый протокол отдельно (/sub/<token>/diag.yaml — профиль без TUN).
+  Отчёт: на рабочий стол + POST /sub/<token>/diag -> /root/vpn/diag/<имя>-<время>.txt
+  Подробный журнал Xray на время разбора: в /usr/local/etc/xray/config.json поставить
+    "log": {"loglevel": "info", "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log"}
+  и перезапустить xray; вернуть обычный — python3 build.py && systemctl restart xray.
+  «REALITY: ... handshake did not complete successfully» = клиент прошёл проверку ключей, но не завершил рукопожатие
+  (сам оборвал или соединение порезали по дороге).
+
+Правила профиля для России (почему так)
+  * GEOIP,RU,DIRECT — только для UDP. У YouTube/Apple/TikTok есть CDN-узлы в РФ с российскими IP: если браузер
+    получил такой IP (свой DoH, кэш DNS), TCP ушёл бы напрямую и попал под замедление.
+  * ipv6: true — TUN перехватывает IPv6, иначе IPv6-трафик уходит мимо VPN.
+
+Напрямую через zapret (опция пользователя "zapret_direct" в users.json, сейчас — user01)
+  Заблокированные/замедленные в РФ сервисы, которым российский IP не мешает, идут напрямую, минуя VPN:
+    youtube (без рекламы — Google не показывает её в РФ), twitch, discord,
+    steam-downloads (только раздача игр/обновлений; вход, магазин, игровые серверы — через VPN).
+  Наборы доменов — ZAPRET_SETS в build.py. Instagram/Facebook/X заблокированы по IP — zapret не поможет, они в VPN.
+  Без zapret у пользователя опцию не включать — прямой YouTube/Discord будут тормозить/не работать.
+  zapret (winws) обязан работать только на реальном адаптере, иначе подмешивает пакеты в TUN Clash и ломает сайты:
+    админ-PowerShell: ...iex $w.DownloadString('https://<IP>:8443/sub/<token>/zapret-fix.ps1')
+  zapret-fix.ps1 (Flowseal zapret-discord-youtube, проверено на 1.10.2):
+    - IP сервера -> lists\ipset-exclude-user.txt (штатный список) + --ipset-exclude-ip в каждый профиль
+      (у профилей Google/Discord в Flowseal нет общего ipset-exclude);
+    - --wf-iface=<индекс реального адаптера>: адреса TUN (198.18.x.x) zapret локальными не считает и ломает трафик в туннеле;
+    - zapret, запущенный батником, переводит в службу zapret (как service.bat), с откатом при сбое.
+    Twitch в zapret не добавляем: Flowseal сам исключает twitch.tv (не замедлен, напрямую работает без обхода).
+    Повторять после смены адаптера (Wi-Fi <-> кабель) или переустановки службы через service.bat.
+
+Игры и лаги (разбор 2026-09-29)
+  * Весь UDP (игры, звонки) -> группа «🎮 Игры и звонки» (VPN) для любых игр и ПК; российские IP по UDP — напрямую.
+    Отдельные правила под игры не нужны. Журнал Xray пишет только ПЕРВЫЙ адрес UDP-сессии (XUDP) —
+    остальные игровые серверы видно только в записи пакетов (tcpdump), не в access.log.
+  * Hysteria2 в mihomo (Clash) теряет UDP-пакеты >1300 байт с сервером Xray (клиент Xray — все размеры проходят):
+    в группе игр Hysteria2 нет. Для своего приложения — ядро Xray (там работают и крупные UDP, и прыжки портов).
+  * «Лаги в начале матча»/красные значки у user01: заморозки Wi-Fi на ПК (USB-адаптер Tenda): ПК молчит 0,4-2,9 с,
+    потом выпускает пачку пакетов (сервер в это время шлёт ровно). Лечится wifi-fix.ps1 / кабелем.
+    Скрипты анализа: зависание = от клиента нет пакетов >0,4 с, затем >=5 пакетов за 20 мс.
+  * wifi-fix.ps1 (админ): питание адаптера и USB — макс. производительность, роуминг — минимум, power save/coalescing — выкл.
+  * game-mode.ps1 (админ): задание Windows «VPN Game Mode» (SYSTEM, при старте) — сторож %ProgramData%\VPN-GameMode\watcher.ps1:
+    игра запущена (по папкам Steam/Epic/EA/Riot/Ubisoft/GOG/Xbox/Games + список имён, лаунчеры исключены)
+    -> netsh wlan set autoconfig enabled=no; нет игры или Wi-Fi отвалился -> enabled=yes. extra.txt — свои процессы.
+    Заодно PnPCapabilities=24 адаптеру (запрет отключения для экономии энергии, после перезагрузки). Удаление — повторный запуск.
+  * lag-monitor.ps1: пинг до роутера и до сервера (/sub/<token>/ping) каждые ~300 мс во время игры, отчёт по Enter.
+
+Мониторинг (Telegram-бот @vpnServSup_bot)
+  monitor.py + таймер vpn-monitor.timer (каждые 15 мин, после загрузки через 3 мин). Настройки: monitor.env (600):
+  TG_TOKEN, TG_CHAT (chat id подхватывается сам из первого сообщения боту /start). Состояние: monitor-state.json.
+  Проверки: службы; IP сервера; сертификат (<2 дней — тревога); подписки (Happ и Clash); VLESS/XHTTP/Hysteria2
+  реальным подключением (TCP + UDP); доступность TCP 443 из России (check-host.net: Москва x2, Петербург; тревога,
+  если <2 из 3); диск >90%. Пишет при поломке и при восстановлении, раз в день после 12:00 МСК — отчёт.
+  Вручную: python3 /root/vpn/monitor.py --report
+
+Если у VPS сменился IP (так уже было: 64.188.112.41 -> 179.254.162.245)
+  NEW=<новый IP>; OLD=<старый IP>
+  1. В users.json поменять "server"
+  2. Выпустить сертификат на IP (Let's Encrypt, 6-дневный, продлевается сам по cron):
+     ~/.acme.sh/acme.sh --issue -d $NEW --standalone --server letsencrypt --cert-profile shortlived --days 3 -k ec-256
+     ~/.acme.sh/acme.sh --install-cert -d $NEW --ecc --key-file /etc/nginx/ssl/key.pem \
+         --fullchain-file /etc/nginx/ssl/fullchain.pem \
+         --reloadcmd "/usr/bin/install -o nobody -g nogroup -m 600 /etc/nginx/ssl/fullchain.pem /etc/nginx/ssl/key.pem /usr/local/etc/xray/tls/ && systemctl reload nginx"
+     ~/.acme.sh/acme.sh --remove -d $OLD --ecc
+     (путь /usr/bin/install обязателен: слово install без пути acme.sh принимает за свою функцию)
+  3. python3 /root/vpn/build.py && systemctl restart xray vpn-shaper
+  Порт 80/tcp должен быть открыт (ufw) — через него Let's Encrypt проверяет IP.
+
+Проверка
+  curl -s -A Happ https://$NEW:8443/sub/<token> | base64 -d     # три ссылки на $NEW
+  curl -s -A clash-verge https://$NEW:8443/sub/<token> | head   # YAML-профиль
+  /root/.acme.sh/acme.sh --list                                 # сертификат и дата продления

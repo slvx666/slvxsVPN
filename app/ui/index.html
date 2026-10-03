@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>VPN</title>
+<style>
+:root{--bg:#1c1c1e;--fg:#e9e9ec;--dim:#98989e;--pink:#ED93B1;--pinkb:#D4537E;--onpink:#4B1528;
+  --card:#2b2b2e;--card2:#37373b;--line:#3c3c40;--input:#242427}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.4 "Segoe UI Variable Text","Segoe UI",Roboto,system-ui,sans-serif;
+  -webkit-user-select:none;user-select:none;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center;padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom)}
+.app{width:100%;max-width:320px;display:flex;flex-direction:column;align-items:center;gap:14px;opacity:0;transition:opacity .5s ease}
+.app.ready{opacity:1}
+#top{width:100%;min-height:44px;transition:opacity .3s ease}
+.wrap{position:relative;width:180px;height:180px;display:flex;align-items:center;justify-content:center;margin-top:6px}
+.pw{position:relative;z-index:3;width:124px;height:124px;border-radius:50%;background:var(--card);border:2px solid var(--line);display:flex;align-items:center;justify-content:center;cursor:pointer;
+  box-shadow:0 6px 18px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.05);
+  transition:transform .45s cubic-bezier(.34,1.56,.64,1),background 1.1s ease,border-color 1.1s ease,box-shadow 1.1s ease;outline:none}
+.pw.press{transform:scale(.92)}
+.pw.wait{box-shadow:0 6px 18px rgba(0,0,0,.45),0 0 22px rgba(237,147,177,.28)}
+.pw.on{background:var(--pink);border-color:var(--pinkb);box-shadow:0 6px 20px rgba(0,0,0,.4),0 0 30px rgba(237,147,177,.5)}
+.pw svg{transition:transform 1.1s cubic-bezier(.34,1.3,.64,1),filter 1.1s ease;filter:drop-shadow(0 0 5px rgba(255,255,255,.14))}
+.pw.wait svg{filter:drop-shadow(0 0 7px rgba(237,147,177,.55))}
+.pw.on svg{transform:scale(1.07);filter:drop-shadow(0 0 5px rgba(0,0,0,.35))}
+.pw svg *{transition:stroke 1s ease,fill 1s ease}
+.arc{position:absolute;inset:0;z-index:2;pointer-events:none}
+.breath{position:absolute;inset:28px;border-radius:50%;background:var(--pink);z-index:0;opacity:0;transition:opacity 1s}
+.on .breath{animation:breath 4s ease-in-out infinite}
+@keyframes breath{0%,100%{transform:scale(1);opacity:0}50%{transform:scale(1.25);opacity:.25}}
+.txt{text-align:center;min-height:52px}
+.fade{transition:opacity .55s ease,transform .55s ease}.fade.hide{opacity:0;transform:translateY(8px)}
+.title{display:flex;align-items:center;justify-content:center;gap:6px}
+#s{font-size:18px;font-weight:600;transition:color 1s}
+#i{font-size:13px;color:var(--dim);margin-top:4px;min-height:18px}
+.err{font-size:13px;color:#F09595;min-height:18px;text-align:center;transition:opacity .3s}
+.btn{width:100%;border-radius:12px;padding:12px 10px;border:1px solid var(--line);background:var(--card);color:var(--fg);font:inherit;font-size:14px;cursor:pointer;
+  box-shadow:0 1px 0 rgba(255,255,255,.04) inset;
+  display:flex;align-items:center;justify-content:center;gap:8px;transition:background .3s ease,color .3s ease,border-color .3s ease,transform .3s cubic-bezier(.34,1.56,.64,1),opacity .3s}
+.btn:active{transform:scale(.97)}
+.btn.primary{background:var(--card2)}
+.btn.quiet{background:transparent;color:var(--dim);border-color:var(--line)}
+.btn[disabled]{opacity:.6;pointer-events:none}
+.edit{display:flex;flex-direction:column;gap:8px}
+.edit .row{display:flex;gap:8px}
+input{width:100%;font:inherit;font-size:13px;padding:12px 12px;border-radius:12px;border:1px solid var(--line);background:var(--input);color:var(--fg);outline:none;
+  -webkit-user-select:text;user-select:text;transition:border-color .3s}
+input:focus{border-color:#6a6a70}
+.chk{display:none}
+.chk path{stroke-dasharray:24;stroke-dashoffset:24;transition:stroke-dashoffset .6s ease .35s}
+.chk.show path{stroke-dashoffset:0}
+.spin{width:14px;height:14px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div id="top"></div>
+  <div class="err" id="err"></div>
+  <div class="wrap" id="wrap">
+    <div class="breath"></div>
+    <svg class="arc" viewBox="0 0 180 180" aria-hidden="true">
+      <circle cx="90" cy="90" r="78" fill="none" stroke="#2a2a2a" stroke-width="3"/>
+      <circle id="arc" cx="90" cy="90" r="78" fill="none" stroke="#ED93B1" stroke-width="4" stroke-linecap="round" stroke-dasharray="0 999" transform="rotate(-90 90 90)" opacity="0"/>
+    </svg>
+    <div class="pw" id="pw" role="button" tabindex="0" aria-label="Включить VPN"></div>
+  </div>
+  <div class="txt">
+    <div class="title fade" id="tt"><span id="s"></span>
+      <svg class="chk" id="chk" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10.5 l4 4 8-9" fill="none" stroke="#ED93B1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div id="i" class="fade"></div>
+  </div>
+</div>
+<script>
+// показать ошибку прямо на экране (на телефоне без отладчика) и всё равно проявить интерфейс
+window.onerror=function(m,src,ln,col){try{var e=document.getElementById('err');if(e)e.textContent='Ошибка: '+m+' ('+ln+')';var a=document.getElementById('app');if(a)a.classList.add('ready');}catch(_){}};
+</script>
+<script>
+'use strict';
+const P='#ED93B1';
+const $=id=>document.getElementById(id);
+const shield=(s,c)=>`<svg width="${s}" height="${s}" viewBox="0 0 52 52" aria-hidden="true"><path d="M26 5 L43 12 V25 C43 36 35 44 26 47 C17 44 9 36 9 25 V12 Z" fill="none" stroke="${c}" stroke-width="3.5" stroke-linejoin="round"/><circle cx="26" cy="23" r="4.5" fill="${c}" stroke="none"/><path d="M26 27 V34" stroke="${c}" stroke-width="3.5" stroke-linecap="round"/></svg>`;
+const icoLink='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 15l6-6"/><path d="M11 6l.46-.54a5 5 0 0 1 7.07 7.07l-.53.47"/><path d="M13 18l-.4.53a5.07 5.07 0 0 1-7.12 0a4.97 4.97 0 0 1 0-7.07l.52-.46"/></svg>';
+const icoOk='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="'+P+'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9 12l2 2 4-4"/></svg>';
+
+/* ---------- мост к приложению (Windows: WebView2, Android: WebView) ---------- */
+const native=(()=>{
+  let seq=0; const pend={};
+  window.__resolve=(id,v)=>{const p=pend[id]; if(p){delete pend[id]; p(v);}};
+  let post=null;
+  if(window.chrome&&window.chrome.webview) post=m=>window.chrome.webview.postMessage(m);
+  else if(window.Android) post=m=>window.Android.post(m);
+  if(!post){ // просмотр в браузере: демо
+    let st={state:'off',detail:''}, sub=false;
+    return {call:(m,a)=>new Promise(r=>setTimeout(()=>{
+      if(m==='init') r({sub,tariff:'безлимит',state:st});
+      else if(m==='addSub'){ if(/\/sub\//.test(a)){sub=true;r({ok:true,tariff:'безлимит'});} else r({error:'Это не похоже на ссылку подписки'}); }
+      else if(m==='paste') r('https://example/sub/demo');
+      else if(m==='toggle'){ if(st.state==='off'){st={state:'connecting',detail:'Подбираю лучший путь'};window.__state(st);setTimeout(()=>{st={state:'on',detail:'Германия · 48 мс'};window.__state(st);},2600);} else {st={state:'off'};window.__state(st);} r({}); }
+      else r({});
+    },150))};
+  }
+  // тайм-аут: если приложение не ответило, не «зависаем» на ожидании
+  return {call:(method,arg)=>new Promise(res=>{
+    const id=++seq; let done=false;
+    pend[id]=v=>{done=true;res(v);};
+    try{ post(JSON.stringify({id,method,arg:arg==null?'':String(arg)})); }catch(e){ delete pend[id]; res({error:'Нет связи с приложением'}); return; }
+    setTimeout(()=>{ if(!done){ delete pend[id]; res(method==='init'?{}:{error:'Приложение не ответило'}); } }, method==='addSub'?30000:8000);
+  })};
+})();
+
+/* ---------- состояние ---------- */
+let sub=false, tariff='', edit=false, busy=false, conn='off', detail='', shownKey='', lastErr='';
+const C=2*Math.PI*78;
+let rot=0,len=0,tLen=0,alpha=0,tAlpha=0,speed=0,tSpeed=0,last=performance.now();
+function frame(now){
+  const dt=Math.min(.05,(now-last)/1000); last=now;
+  // скорость, длина и прозрачность дуги только «подтягиваются» к целям — никогда не сбрасываются,
+  // поэтому поиск бесшовно перетекает в полное кольцо и обратно
+  speed+=(tSpeed-speed)*Math.min(1,dt*2.5); rot=(rot+speed*dt)%360;
+  len+=(tLen-len)*Math.min(1,dt*3); alpha+=(tAlpha-alpha)*Math.min(1,dt*3);
+  const a=$('arc'); a.setAttribute('stroke-dasharray',`${(len*C).toFixed(2)} ${C}`); a.setAttribute('opacity',alpha.toFixed(3)); a.setAttribute('transform',`rotate(${(rot-90).toFixed(2)} 90 90)`);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+function err(m){ $('err').textContent=m||''; }
+
+function renderTop(){
+  let h;
+  if(edit) h=`<div class="edit"><input id="in" placeholder="https://…/sub/…" spellcheck="false" autocomplete="off" inputmode="url"><div class="row"><button class="btn" id="paste">Вставить</button><button class="btn primary" id="ok">Готово</button></div></div>`;
+  else if(!sub) h=`<button class="btn primary" id="add">${icoLink}<span>Добавить подписку</span></button>`;
+  else h=`<button class="btn quiet" id="add">${icoOk}<span>Подписка · ${esc(tariff||'активна')}</span></button>`;
+  const t=$('top'); t.style.opacity=0;
+  setTimeout(()=>{t.innerHTML=h; t.style.opacity=1;
+    if($('add')) $('add').onclick=()=>{edit=true;err('');renderTop();};
+    if($('paste')) $('paste').onclick=async()=>{const v=await native.call('paste'); if(v){$('in').value=v.trim(); err('');}};
+    if($('in')){ $('in').oninput=()=>err(''); $('in').onkeydown=e=>{if(e.key==='Enter')$('ok').click(); if(e.key==='Escape'&&sub){edit=false;err('');renderTop();}}; }
+    if($('ok')) $('ok').onclick=done;
+  },300);
+}
+async function done(){
+  if(busy) return;
+  const v=$('in').value.trim();
+  if(!v){ if(sub){edit=false;err('');renderTop();return;} err('Вставьте ссылку на подписку'); return; }
+  if(!/^https?:\/\//i.test(v)&&!/https?:\/\//i.test(v)){ err('Это не похоже на ссылку подписки'); return; }
+  busy=true; const b=$('ok'); b.disabled=true; b.innerHTML='<span class="spin"></span>';
+  const r=await native.call('addSub',v); busy=false;
+  if(r&&r.ok){ sub=true; tariff=r.tariff||''; edit=false; err(''); renderTop(); render(true); }
+  else { err((r&&r.error)||'Не получилось'); if($('ok')){ $('ok').disabled=false; $('ok').textContent='Готово'; } }
+}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function sublineFor(){
+  if(conn==='on') return detail||'';
+  if(conn==='connecting') return detail||'Подбираю лучший путь';
+  return sub?'Нажмите, чтобы включить':'Сначала добавьте подписку';
+}
+// render: круг и дуга меняются плавно (CSS + покадровое сглаживание), тексты — через мягкое затухание
+function render(force){
+  const on=conn==='on', wait=conn==='connecting';
+  if(wait){tLen=.22;tAlpha=1;tSpeed=320;} else if(on){tLen=1;tAlpha=1;tSpeed=40;} else {tLen=0;tAlpha=0;tSpeed=0;}
+  $('wrap').className='wrap'+(on?' on':'');
+  const pw=$('pw'); pw.classList.toggle('on',on); pw.classList.toggle('wait',wait); pw.setAttribute('aria-label',on||wait?'Выключить VPN':'Включить VPN');
+  const col=on?'#1a1a1a':wait?P:'#777';
+  if(!pw.firstChild) pw.innerHTML=shield(58,col);
+  else pw.querySelectorAll('path,circle').forEach(n=>{ if(n.tagName==='circle') n.setAttribute('fill',col); else n.setAttribute('stroke',col); });
+  const key=conn+'|'+sub, sl=sublineFor();
+  if(key!==shownKey||force){
+    const first=shownKey==='';
+    shownKey=key;
+    const tt=$('tt'), ii=$('i');
+    if(!first){ tt.classList.add('hide'); ii.classList.add('hide'); }
+    setTimeout(()=>{
+      $('s').textContent=on?'Подключено':wait?'Подключаюсь…':'Не подключено'; $('s').style.color=on?P:'#eee';
+      const ck=$('chk'); ck.style.display=on?'block':'none'; ck.classList.remove('show');
+      if(on) requestAnimationFrame(()=>requestAnimationFrame(()=>ck.classList.add('show')));
+      ii.textContent=sublineFor(); tt.classList.remove('hide'); ii.classList.remove('hide');
+    },first?0:350);
+  } else if($('i').textContent!==sl){
+    const ii=$('i'), a=$('i').textContent, same=a.split('·')[0]===sl.split('·')[0];
+    if(same){ ii.textContent=sl; }            // сменились только миллисекунды — без мерцания
+    else { ii.classList.add('hide'); setTimeout(()=>{ii.textContent=sublineFor(); ii.classList.remove('hide');},350); }
+  }
+}
+window.__state=st=>{
+  if(!st) return;
+  conn=st.state||'off'; detail=st.detail||'';
+  if(st.error&&st.error!==lastErr){ err(st.error); }
+  lastErr=st.error||'';
+  if(conn!=='off'&&!st.error&&!edit) err('');
+  render(false);
+};
+window.__sub=s=>{ sub=!!s.sub; tariff=s.tariff||''; if(!edit) renderTop(); render(true); };
+// прямая доставка данных приложением (после загрузки страницы) — на случай, если запрос init потерялся
+window.__hydrate=d=>{ try{ if(!d) return; sub=!!d.sub; tariff=d.tariff||''; if(d.state){conn=d.state.state||'off';detail=d.state.detail||'';} if(!edit) renderTop(); render(true); document.getElementById('app').classList.add('ready'); }catch(e){} };
+
+const pw=$('pw');
+const press=()=>{pw.classList.add('press');}, release=()=>{pw.classList.remove('press');};
+pw.addEventListener('pointerdown',press); pw.addEventListener('pointerup',release); pw.addEventListener('pointerleave',release); pw.addEventListener('pointercancel',release);
+pw.onclick=async()=>{
+  if(!sub){ err('Сначала добавьте подписку'); if(!edit){edit=true;renderTop();} return; }
+  err('');
+  // мгновенный отклик: поиск начинается сразу, не дожидаясь ответа ядра
+  if(conn==='off'){ conn='connecting'; detail='Подбираю лучший путь'; render(false); }
+  else { conn='off'; render(false); }
+  await native.call('toggle', conn==='off'?'off':'on');
+};
+pw.onkeydown=e=>{ if(e.key===' '||e.key==='Enter'){ e.preventDefault(); pw.click(); } };
+
+// интерфейс виден сразу и не зависит от ответа приложения
+renderTop(); render(true);
+requestAnimationFrame(()=>$('app').classList.add('ready'));
+async function hydrate(){
+  try{
+    const r=await native.call('init');
+    if(r&&typeof r==='object'){
+      sub=!!r.sub; tariff=r.tariff||'';
+      if(r.state){ conn=r.state.state||'off'; detail=r.state.detail||''; if(r.state.error) err(r.state.error); }
+      if(!edit) renderTop();
+      render(true);
+    }
+  }catch(e){ err('Ошибка запуска: '+e); }
+  $('app').classList.add('ready');
+}
+// запускаем обмен с приложением только после полной загрузки страницы:
+// ответ на слишком ранний запрос мобильный WebView может потерять
+if(document.readyState==='complete') hydrate();
+else window.addEventListener('load',hydrate);
+document.addEventListener('contextmenu',e=>{ if(e.target.tagName!=='INPUT') e.preventDefault(); });
+</script>
+</body>
+</html>
