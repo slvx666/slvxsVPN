@@ -192,6 +192,30 @@ func removeServerRoute(phys *physIface, server string) {
 	}
 }
 
+// cleanupTun полностью удаляет маршруты туннеля, сбрасывает DNS туннеля и освобождает трафик при выключении.
+func cleanupTun(phys *physIface, server string) {
+	if tl, err := tunLUID(); err == nil {
+		for _, p := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
+			_ = tl.DeleteRoute(netip.MustParsePrefix(p), netip.IPv4Unspecified())
+		}
+		for _, p := range []string{"::/1", "8000::/1"} {
+			_ = tl.DeleteRoute(netip.MustParsePrefix(p), netip.IPv6Unspecified())
+		}
+		_ = tl.FlushRoutes(windows.AF_INET)
+		_ = tl.FlushRoutes(windows.AF_INET6)
+		_ = tl.FlushDNS(windows.AF_INET)
+		_ = tl.FlushDNS(windows.AF_INET6)
+		_ = tl.FlushIPAddresses(windows.AF_INET)
+	}
+	if ad, err := wintun.OpenAdapter(tunName); err == nil {
+		_ = ad.Close()
+	}
+	if phys != nil && server != "" {
+		removeServerRoute(phys, server)
+	}
+	flushDNS()
+}
+
 var (
 	dnsapi                = windows.NewLazySystemDLL("dnsapi.dll")
 	procDnsFlushResolverCache = dnsapi.NewProc("DnsFlushResolverCache")

@@ -133,8 +133,8 @@ func (e *Engine) Start(p *Profile) error {
 	e.mu.Unlock()
 
 	e.setState(func(s *State) { *s = State{State: "connecting", Detail: "Подбираю лучший путь"} })
-	// до первых проверок: основной протокол, сервисы — через VPN (или как в прошлый раз в этой сети)
-	for k, v := range map[string]string{swTCP: tagVLESS, swUDP: tagHy2} {
+	// до первых проверок: основной протокол, сервисы — через VPN (Hysteria2 с BBR надёжен везде)
+	for k, v := range map[string]string{swTCP: tagHy2, swUDP: tagHy2} {
 		if e.targets[k] == "" {
 			e.targets[k] = v
 		}
@@ -339,11 +339,11 @@ func (e *Engine) probeHTTP(ctx context.Context, tag, url string, minBytes int, t
 	return time.Since(t0), nil
 }
 
-// probeUDP: DNS-запрос к 77.88.8.8, 1.1.1.1 или 8.8.8.8 через выход tag.
+// probeUDP: DNS-запрос к 8.8.8.8 или 77.88.8.8 через выход tag.
 func (e *Engine) probeUDP(ctx context.Context, tag string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	targets := []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+	targets := []string{"8.8.8.8", "77.88.8.8"}
 	var lastErr error
 	for _, ip := range targets {
 		if ctx.Err() != nil {
@@ -392,8 +392,8 @@ type streak struct {
 }
 
 func (e *Engine) transportLoop(ctx context.Context) {
-	tcpOrder := []string{tagVLESS, tagXHTTP, tagHy2}
-	udpOrder := []string{tagHy2, tagVLESS, tagXHTTP}
+	tcpOrder := []string{tagHy2, tagVLESS, tagXHTTP}
+	udpOrder := []string{tagHy2, tagVLESS}
 	tcp := map[string]*streak{}
 	udp := map[string]*streak{}
 	for _, t := range tcpOrder {
@@ -470,7 +470,7 @@ func (e *Engine) transportLoop(ctx context.Context) {
 		if !anyOK {
 			wait = 3 * time.Second
 		} else if !tcpOK[e.target(swTCP)] || !udpOK[e.target(swUDP)] {
-			wait = 4 * time.Second // текущий протокол сбоит — перепроверяем быстро, чтобы переключиться за секунды
+			wait = 15 * time.Second // текущий протокол сбоит — интервал 15 с без спама сети
 		}
 		select {
 		case <-ctx.Done():
@@ -795,7 +795,7 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 				onVPN++
 			}
 		}
-		if broken > 0 && time.Since(lastSearch) > 10*time.Minute {
+		if broken > 0 && time.Since(lastSearch) > 30*time.Minute && strategy >= 0 {
 			search()
 		}
 		e.setState(func(st *State) {

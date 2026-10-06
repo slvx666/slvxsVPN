@@ -96,7 +96,7 @@ func (b *B) Apply(ctx context.Context, i int) (string, error) {
 	if s.args == nil {
 		return s.tag, nil
 	}
-	args := append([]string{"-i", "127.0.0.1", "-p", strconv.Itoa(b.Port), "-N", "-U", "-c", "1024", "-T", "5"}, s.args...)
+	args := append([]string{"-i", "127.0.0.1", "-p", strconv.Itoa(b.Port), "-U", "-c", "1024", "-T", "5"}, s.args...)
 	cmd := exec.Command(b.Bin, args...)
 	cmd.SysProcAttr = sysProcAttr()
 	cmd.Stdout, cmd.Stderr = nil, nil

@@ -43,8 +43,21 @@ public class MainActivity extends Activity {
         // любая ошибка при старте — на экран (иначе виден только серый WebView без подсказки)
         try {
             buildUi();
+            checkAutoConnect(getIntent());
         } catch (Throwable t) {
             showFatal(t);
+        }
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        checkAutoConnect(intent);
+    }
+
+    private void checkAutoConnect(Intent intent) {
+        if (intent != null && intent.getBooleanExtra("connect", false)) {
+            startVpn();
         }
     }
 

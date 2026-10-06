@@ -15,8 +15,8 @@ APP = f"{BASE}/app"  # файлы приложения VPN (app_update.py): ге
 # Приложение само проверяет probes и, если так не работает, пускает сервис через VPN.
 APP_SERVICES = [
     {"id": "youtube", "mode": "bypass", "domains": ["geosite:youtube"],   # без рекламы: в РФ её не показывают
-     "probes": [{"url": "https://www.youtube.com/", "min_bytes": 200000},
-                {"url": "https://redirector.googlevideo.com/report_mapping", "min_bytes": 400000}]},
+     "probes": [{"url": "https://www.youtube.com/", "min_bytes": 100000},
+                {"url": "https://redirector.googlevideo.com/report_mapping", "min_bytes": 20000}]},
     {"id": "twitch", "mode": "direct", "domains": ["geosite:twitch"],
      "probes": [{"url": "https://www.twitch.tv/robots.txt", "min_bytes": 0}]},
     # Steam — только раздача игр/обновлений (российские CDN быстрее); вход, магазин, игры — через VPN

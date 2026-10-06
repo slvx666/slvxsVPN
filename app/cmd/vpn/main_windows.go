@@ -403,15 +403,26 @@ func (a *App) onNetChange() {
 	if eng == nil {
 		return
 	}
-	phys, err := defaultIface()
+	// При выходе из спящего режима Wi-Fi/адаптеру нужно несколько секунд на получение IP по DHCP
+	var phys *physIface
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		phys, err = defaultIface()
+		if err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
 	if err != nil {
+		logf("сеть недоступна после выхода из сна/смены: %v", err)
 		return
 	}
-	if old != nil && phys.Index == old.Index {
+	if old != nil && phys.Index == old.Index && phys.Gateway == old.Gateway {
+		logf("сеть подтверждена (адаптер %s)", phys.Name)
 		eng.Kick()
 		return
 	}
-	logf("сменился адаптер: %s -> %s", ifaceName(old), phys.Name)
+	logf("сменился адаптер или шлюз: %s -> %s", ifaceName(old), phys.Name)
 	a.mu.Lock()
 	a.phys = phys
 	a.mu.Unlock()
@@ -460,6 +471,10 @@ func (a *App) teardown() {
 	phys := a.phys
 	svcs := a.stoppedSvcs
 	a.stoppedSvcs = nil
+	srv := ""
+	if a.profile != nil {
+		srv = a.profile.Server
+	}
 	a.mu.Unlock()
 
 	if watcher != nil {
@@ -475,9 +490,7 @@ func (a *App) teardown() {
 		zap.Stop()
 	}
 	startServices(svcs)
-	if phys != nil && a.profile != nil {
-		removeServerRoute(phys, a.profile.Server)
-	}
+	cleanupTun(phys, srv)
 	setSmartDNS(false, a.persist)
 	core.DirectDialer.Control = nil
 }

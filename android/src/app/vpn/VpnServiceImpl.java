@@ -10,6 +10,7 @@ import android.net.ConnectivityManager;
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
 import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -24,7 +25,7 @@ import java.nio.charset.StandardCharsets;
 public class VpnServiceImpl extends VpnService {
     public static final String ACTION_START = "start", ACTION_STOP = "stop";
     static final String TUN_ADDR4 = "172.19.0.1", TUN_DNS4 = "172.19.0.2", TUN_ADDR6 = "fdfe:dcba:9876::1";
-    static final int MTU = 1420, NOTIF_ID = 1;
+    static final int MTU = 1280, NOTIF_ID = 1;
 
     private ParcelFileDescriptor tun;
     private Process core;
@@ -54,11 +55,9 @@ public class VpnServiceImpl extends VpnService {
                     .setSession("VPN")
                     .setMtu(MTU)
                     .addAddress(TUN_ADDR4, 30)
-                    .addAddress(TUN_ADDR6, 126)
                     .addDnsServer(TUN_DNS4)
                     .addDnsServer("77.88.8.8")
                     .addRoute("0.0.0.0", 0)
-                    .addRoute("::", 0)
                     .setConfigureIntent(PendingIntent.getActivity(this, 0,
                             new Intent(this, MainActivity.class),
                             PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0)));
@@ -67,6 +66,15 @@ public class VpnServiceImpl extends VpnService {
             if (Build.VERSION.SDK_INT >= 29) b.setMetered(false);
             tun = b.establish();
             if (tun == null) { fail("VPN не разрешён"); return; }
+            if (Build.VERSION.SDK_INT >= 22) {
+                try {
+                    ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+                    if (cm != null) {
+                        Network act = cm.getActiveNetwork();
+                        if (act != null) setUnderlyingNetworks(new Network[]{act});
+                    }
+                } catch (Exception ignore) {}
+            }
 
             String name = "vpn_tun_" + System.nanoTime();
             sock = new LocalServerSocket(name);
@@ -171,8 +179,27 @@ public class VpnServiceImpl extends VpnService {
         if (cm == null) return;
         netCb = new ConnectivityManager.NetworkCallback() {
             private long lastKey = -1, lastAt = 0;
-            @Override public void onAvailable(Network n) { changed(n); }
-            @Override public void onLost(Network n) { changed(n); }
+            @Override public void onAvailable(Network n) {
+                if (Build.VERSION.SDK_INT >= 22 && n != null) {
+                    try { setUnderlyingNetworks(new Network[]{n}); } catch (Exception ignore) {}
+                }
+                changed(n);
+            }
+            @Override public void onCapabilitiesChanged(Network n, NetworkCapabilities caps) {
+                if (Build.VERSION.SDK_INT >= 22 && n != null) {
+                    try { setUnderlyingNetworks(new Network[]{n}); } catch (Exception ignore) {}
+                }
+            }
+            @Override public void onLost(Network n) {
+                if (Build.VERSION.SDK_INT >= 22) {
+                    try {
+                        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+                        Network act = cm != null ? cm.getActiveNetwork() : null;
+                        setUnderlyingNetworks(act != null ? new Network[]{act} : null);
+                    } catch (Exception ignore) {}
+                }
+                changed(n);
+            }
             private void changed(Network n) {
                 long k = n == null ? 0 : n.getNetworkHandle();
                 long now = System.currentTimeMillis();
@@ -192,6 +219,9 @@ public class VpnServiceImpl extends VpnService {
     private void stopAll() {
         running = false;
         Prefs.setWantOn(this, false);
+        if (Build.VERSION.SDK_INT >= 22) {
+            try { setUnderlyingNetworks(null); } catch (Exception ignore) {}
+        }
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         if (cm != null && netCb != null) { try { cm.unregisterNetworkCallback(netCb); } catch (Exception ignore) {} netCb = null; }
         toCore("stop");

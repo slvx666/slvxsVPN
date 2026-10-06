@@ -225,10 +225,8 @@ func run(dataDir, libDir, sock string) {
 		runner, err := startSingbox(dataDir, libDir, tunFd, p, logf)
 		if err != nil {
 			log.Print("start singbox: ", err)
-			emit(map[string]any{"state": "off", "error": "Не удалось запустить VPN"})
 			os.Exit(1)
 		}
-		emit(core.State{State: "on", Detail: "Германия · sing-box", TCP: "vless", UDP: "hy2"})
 
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
@@ -249,6 +247,9 @@ func run(dataDir, libDir, sock string) {
 				if !ok || c == "stop" {
 					runner.stop()
 					return
+				}
+				if strings.HasPrefix(c, "net") {
+					runner.onNetworkChange()
 				}
 			}
 		}

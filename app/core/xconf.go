@@ -9,7 +9,7 @@ const (
 	TunAddr4 = "172.19.0.1"
 	TunDNS4  = "172.19.0.2" // «DNS-сервер» внутри туннеля: запросы к нему перехватывает Xray (fakedns)
 	TunAddr6 = "fdfe:dcba:9876::1"
-	TunMTU   = 1420
+	TunMTU   = 1280
 )
 
 // Теги выходов Xray. sw-* — переключатели (switch.go): куда они ведут, решает движок по результатам проверок.
@@ -30,9 +30,12 @@ type obj = map[string]any
 
 func (e *Engine) buildConfig() obj {
 	p := e.profile
-	// БЕЗ tcpFastOpen: провайдер (СПб, 2026-09) режет TCP с данными в SYN — с TFO не работал ни VLESS,
-	// ни прямой DoH, живым оставался только UDP (Hysteria2) — отсюда видео YouTube по 2-3 минуты.
-	sockopt := obj{}
+	// БЕЗ tcpFastOpen: провайдер (СПб, 2026-09) режет TCP с данными в SYN.
+	// tcpKeepAlive: 15 сек — исключает сброс сессий в NAT роутеров и мобильных операторов (CGNAT).
+	sockopt := obj{
+		"tcpKeepAliveIdle":     15,
+		"tcpKeepAliveInterval": 15,
+	}
 	if e.opt.Platform != "android" && e.opt.BindIface != "" {
 		sockopt["interface"] = e.opt.BindIface
 	}
