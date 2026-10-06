@@ -10,6 +10,9 @@ what="${1:-code}"
 push_app() {
 	echo "→ app"
 	tar czf - -C "$ROOT" --exclude='app/cmd/dumpcfg' app | ssh "$SERVER" 'cd /root/build && tar xzf -'
+	echo "→ xray-src patched files"
+	scp -q "$ROOT/xray-src/transport/internet/hysteria/dialer.go" "$SERVER:/root/build/xray-src/transport/internet/hysteria/dialer.go"
+	scp -q "$ROOT/xray-src/transport/internet/hysteria/udphop/conn.go" "$SERVER:/root/build/xray-src/transport/internet/hysteria/udphop/conn.go"
 }
 push_android() {
 	echo "→ android"

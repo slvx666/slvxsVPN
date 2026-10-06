@@ -653,7 +653,12 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 	if len(bypass) > 0 {
 		netKey = e.opt.NetKey()
 		if name, ok := e.cache.Bypass[netKey]; ok {
-			if i := indexOf(e.opt.Bypass.Strategies(), name); i >= 0 {
+			if name == "none" {
+				strategy, bypassTag = -1, ""
+				for _, s := range bypass {
+					e.setTarget(swService(s.ID), swTCP)
+				}
+			} else if i := indexOf(e.opt.Bypass.Strategies(), name); i >= 0 {
 				if tag, err := e.opt.Bypass.Apply(ctx, i); err == nil {
 					strategy, bypassTag = i, tag
 					for _, s := range bypass {
@@ -721,9 +726,12 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 		if best < 0 {
 			e.opt.Bypass.Apply(ctx, -1)
 			strategy, bypassTag = -1, ""
+			e.cache.Bypass[netKey] = "none"
+			e.saveCache()
 			for _, s := range bypass {
 				e.setTarget(swService(s.ID), swTCP)
 			}
+			e.setState(func(st *State) { st.Bypass = "" })
 			return
 		}
 		if _, err := e.opt.Bypass.Apply(ctx, best); err != nil {
@@ -761,7 +769,13 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 		if k := e.opt.NetKey(); k != netKey {
 			netKey = k
 			if name, ok := e.cache.Bypass[k]; ok {
-				if i := indexOf(e.opt.Bypass.Strategies(), name); i >= 0 && i != strategy {
+				if name == "none" {
+					strategy, bypassTag = -1, ""
+					_, _ = e.opt.Bypass.Apply(ctx, -1)
+					for _, s := range bypass {
+						e.setTarget(swService(s.ID), swTCP)
+					}
+				} else if i := indexOf(e.opt.Bypass.Strategies(), name); i >= 0 && i != strategy {
 					if tag, err := e.opt.Bypass.Apply(ctx, i); err == nil {
 						strategy, bypassTag = i, tag
 					}
@@ -771,7 +785,7 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 			}
 		}
 		if strategy < 0 {
-			if time.Since(lastSearch) > 10*time.Minute {
+			if e.cache.Bypass[netKey] != "none" && time.Since(lastSearch) > 2*time.Hour {
 				search()
 			}
 			return
@@ -808,7 +822,7 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 
 	// первая проверка — сразу; поиск обхода, если в этой сети ещё не искали
 	time.Sleep(1500 * time.Millisecond)
-	if len(bypass) > 0 && strategy < 0 {
+	if len(bypass) > 0 && strategy < 0 && e.cache.Bypass[netKey] != "none" {
 		search()
 	}
 	check()

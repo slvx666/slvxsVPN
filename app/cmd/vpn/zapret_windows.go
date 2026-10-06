@@ -272,6 +272,7 @@ func (z *zapret) Apply(ctx context.Context, i int) (string, error) {
 	z.stopLocked()
 	z.cur = -1
 	if i < 0 || i >= len(z.strategies) {
+		killForeignWinws(filepath.Join(z.root, "bin", "winws.exe"))
 		return "", nil
 	}
 	if i == 0 {
@@ -325,6 +326,7 @@ func (z *zapret) Stop() {
 	z.mu.Lock()
 	defer z.mu.Unlock()
 	z.stopLocked()
+	killForeignWinws(filepath.Join(z.root, "bin", "winws.exe"))
 	z.cur = -1
 }
 

@@ -42,7 +42,16 @@ func (e *Engine) buildConfig() obj {
 	reality := obj{"serverName": p.SNI, "fingerprint": "chrome", "publicKey": p.PublicKey, "shortId": p.ShortID, "spiderX": "/"}
 
 	hy2mask := obj{"udp": []obj{{"type": "salamander", "settings": obj{"password": p.Hy2.Obfs}}}}
-	qp := obj{"congestion": "bbr", "maxIdleTimeout": 20, "keepAlivePeriod": 8}
+	qp := obj{
+		"congestion":                  "bbr",
+		"maxIdleTimeout":              20,
+		"keepAlivePeriod":             8,
+		"initStreamReceiveWindow":     8388608,
+		"maxStreamReceiveWindow":      16777216,
+		"initConnReceiveWindow":       16777216,
+		"maxConnReceiveWindow":        33554432,
+		"disablePathMTUDiscovery":     true,
+	}
 	if p.Hy2.Hop != "" {
 		// прыжки портов: провайдер не видит один «вечный» UDP-поток; клиент Xray прыгает без потерь
 		qp["udpHop"] = obj{"ports": p.Hy2.Hop, "interval": "30-60"}
@@ -166,7 +175,7 @@ func (e *Engine) buildConfig() obj {
 		"routing":   obj{"domainStrategy": "AsIs", "rules": rules},
 		"dns":       dns,
 		"fakedns":   []obj{{"ipPool": "198.18.0.0/15", "poolSize": 65535}},
-		"policy": obj{"levels": obj{"0": obj{"handshake": 5, "connIdle": 300, "uplinkOnly": 1, "downlinkOnly": 1}},
+		"policy": obj{"levels": obj{"0": obj{"handshake": 5, "connIdle": 300, "uplinkOnly": 1, "downlinkOnly": 1, "bufferSize": 8192}},
 			"system": obj{}},
 	}
 }
