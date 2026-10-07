@@ -201,8 +201,47 @@ func watchPanic(path string, e *core.Engine) {
 }
 
 
+// Журнал проблем: trouble.log в папке диагностики (Android/data/app.vpn/files) — только значимое: сводки
+// проверок со сбоями/медленными ответами, смены состояния и протоколов, подбор обхода, смена сети, события
+// устройства из Java (сигнал, батарея, «дрёма»). Пишется в релизе всегда, ≤ 3 МБ (старое уходит в .1).
+var (
+	troubleMu   sync.Mutex
+	troublePath string
+)
+
+func tlog(format string, a ...any) {
+	if troublePath == "" {
+		return
+	}
+	troubleMu.Lock()
+	defer troubleMu.Unlock()
+	if st, err := os.Stat(troublePath); err == nil && st.Size() > 3<<20 {
+		os.Remove(troublePath + ".1")
+		os.Rename(troublePath, troublePath+".1")
+	}
+	f, err := os.OpenFile(troublePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s [ядро] %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, a...))
+}
+
 func run(dataDir, libDir, sock string) {
-	logf := func(f string, a ...any) { log.Printf(f, a...) }
+	if d := os.Getenv("VPN_DIAG_DIR"); d != "" {
+		os.MkdirAll(d, 0o755)
+		troublePath = filepath.Join(d, "trouble.log")
+	} else {
+		troublePath = filepath.Join(dataDir, "trouble.log")
+	}
+	tlog("=== запуск ядра %s, сеть %s", core.Version, os.Getenv("VPN_NETKEY"))
+	logf := func(f string, a ...any) {
+		log.Printf(f, a...)
+		// сводка кругов заменяет построчные «probe …»; остальное — в журнал проблем
+		if !strings.HasPrefix(f, "probe ") {
+			tlog(f, a...)
+		}
+	}
 	p, err := core.LoadProfile(dataDir)
 	if err != nil {
 		emit(core.State{State: "off", Detail: "Сначала добавьте подписку"})
@@ -283,6 +322,7 @@ func run(dataDir, libDir, sock string) {
 		Bypass:   bp, Logf: logf,
 		NetKey: func() string { return os.Getenv("VPN_NETKEY") },
 		OnState: func(s core.State) { emit(s) },
+		Event:   func(m string) { tlog("%s", m) },
 		BeforeStart: func() error {
 			// каждому запуску ядра — свой дубликат дескриптора (ядро закрывает свой при остановке)
 			if curFd >= 0 {

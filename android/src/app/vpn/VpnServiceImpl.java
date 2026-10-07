@@ -43,6 +43,7 @@ public class VpnServiceImpl extends VpnService {
 
     private void start() {
         running = true;
+        Trouble.log(this, "=== VPN включается (версия " + Trouble.ver(this) + ") " + Trouble.snapshot(this));
         Prefs.setWantOn(this, true);
         startForegroundNotif("Подключаюсь…");
         Bus.post("{\"state\":\"connecting\",\"detail\":\"Подбираю лучший путь\"}");
@@ -110,6 +111,7 @@ public class VpnServiceImpl extends VpnService {
 
             new Thread(this::readState, "vpn-state").start();
             registerNetCallback();
+            startSnapshots();
         } catch (Exception e) {
             fail("Не удалось запустить VPN");
         }
@@ -150,6 +152,7 @@ public class VpnServiceImpl extends VpnService {
             if (reason.isEmpty()) reason = tailFile(new java.io.File(getFilesDir(), "core.log"), 2);
             if (reason.isEmpty()) { try { reason = "код " + core.exitValue(); } catch (Exception e) { reason = "неизвестно"; } }
             String msg = "Ядро остановилось: " + reason;
+            Trouble.log(this, "ЯДРО ОСТАНОВИЛОСЬ: " + reason + " | " + Trouble.snapshot(this));
             Bus.post("{\"state\":\"off\",\"error\":" + org.json.JSONObject.quote(msg) + "}");
             stopAll();
         }
@@ -213,6 +216,7 @@ public class VpnServiceImpl extends VpnService {
         long h = p == null ? 0 : p.getNetworkHandle();
         if (h == netHandle) return;
         netHandle = h;
+        Trouble.log(this, "СМЕНА СЕТИ " + Trouble.snapshot(this));
         if (p != null) toCore("net " + h + " " + netKey(cm, p));
     }
 
@@ -261,8 +265,24 @@ public class VpnServiceImpl extends VpnService {
         stopAll();
     }
 
+    private Thread snaps;
+
+    /** Снимок состояния устройства раз в минуту (и при каждой смене сети — см. netChanged). */
+    private void startSnapshots() {
+        snaps = new Thread(() -> {
+            while (running) {
+                try { Thread.sleep(60000); } catch (InterruptedException e) { return; }
+                if (running) Trouble.log(this, "снимок " + Trouble.snapshot(this));
+            }
+        }, "vpn-snap");
+        snaps.setDaemon(true);
+        snaps.start();
+    }
+
     private void stopAll() {
+        if (running) Trouble.log(this, "=== VPN выключается " + Trouble.snapshot(this));
         running = false;
+        if (snaps != null) snaps.interrupt();
         Prefs.setWantOn(this, false);
         if (Build.VERSION.SDK_INT >= 22) {
             try { setUnderlyingNetworks(null); } catch (Exception ignore) {}
@@ -283,8 +303,13 @@ public class VpnServiceImpl extends VpnService {
         stopSelf();
     }
 
-    @Override public void onDestroy() { if (running) stopAll(); super.onDestroy(); }
-    @Override public void onRevoke() { stopAll(); }
+    @Override public void onDestroy() {
+        Trouble.log(this, "служба уничтожена (работала=" + running + ")");
+        if (running) stopAll();
+        super.onDestroy();
+    }
+    @Override public void onRevoke() { Trouble.log(this, "VPN отозван системой (включился другой VPN?)"); stopAll(); }
+    @Override public void onTrimMemory(int level) { Trouble.log(this, "нехватка памяти, уровень " + level); super.onTrimMemory(level); }
 
     private java.io.File libDir() { return new java.io.File(getApplicationInfo().nativeLibraryDir); }
 

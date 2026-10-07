@@ -47,6 +47,7 @@ type Options struct {
 	NetKey      func() string                 // «отпечаток» текущей сети — для запоминания удачного обхода
 	OnState     func(State)                   // вызывается при каждом изменении
 	Logf        func(format string, a ...any) //
+	Event       func(msg string)              // журнал проблем (Android: trouble.log): сводки проверок, смены состояния
 	BeforeStart func() error                  // Android: передать Xray дескриптор TUN
 	AfterStart  func() error                  // ПК: адрес/маршруты/DNS адаптера
 }
@@ -129,6 +130,9 @@ func (e *Engine) setState(f func(*State)) {
 	f(&e.st)
 	s := e.st
 	e.mu.Unlock()
+	if e.opt.Event != nil && (old.State != s.State || old.TCP != s.TCP || old.UDP != s.UDP) {
+		e.opt.Event(fmt.Sprintf("состояние %s -> %s (%s) tcp=%s udp=%s", old.State, s.State, s.Detail, s.TCP, s.UDP))
+	}
 	if e.opt.OnState != nil && fmt.Sprint(old) != fmt.Sprint(s) {
 		e.opt.OnState(s)
 	}
@@ -430,10 +434,12 @@ func (e *Engine) transportLoop(ctx context.Context) {
 	// протокол, который стабильно не проходит (дома VLESS рвут 9 из 10), проверяем раз в 3 мин, а не каждые
 	// 20 с: лишние оборванные соединения к серверу только привлекают внимание DPI. Смена сети — всё заново.
 	next := map[string]time.Time{}
+	round := 0
 	for {
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		tcpOK, udpOK := map[string]bool{}, map[string]bool{}
+		tcpMs, udpMs := map[string]time.Duration{}, map[string]time.Duration{}
 		probed := map[string]bool{}
 		for _, t := range tcpOrder {
 			if !first && time.Now().Before(next[t]) {
@@ -443,9 +449,9 @@ func (e *Engine) transportLoop(ctx context.Context) {
 			wg.Add(2)
 			go func(t string) {
 				defer wg.Done()
-				_, err := e.probeHTTP(ctx, t, "https://www.gstatic.com/generate_204", 0, 8*time.Second)
+				d, err := e.probeHTTP(ctx, t, "https://www.gstatic.com/generate_204", 0, 8*time.Second)
 				mu.Lock()
-				tcpOK[t] = err == nil
+				tcpOK[t], tcpMs[t] = err == nil, d
 				mu.Unlock()
 				if err != nil {
 					e.opt.Logf("probe tcp %s: %v", t, err)
@@ -461,9 +467,10 @@ func (e *Engine) transportLoop(ctx context.Context) {
 				if indexOf(udpOrder, t) < 0 {
 					return // UDP поверх XHTTP (TCP) для игр и голоса не годится — не проверяем и не выбираем
 				}
+				t0 := time.Now()
 				err := e.probeUDP(ctx, t, 6*time.Second)
 				mu.Lock()
-				udpOK[t] = err == nil
+				udpOK[t], udpMs[t] = err == nil, time.Since(t0)
 				mu.Unlock()
 				if err != nil {
 					e.opt.Logf("probe udp %s: %v", t, err)
@@ -480,6 +487,8 @@ func (e *Engine) transportLoop(ctx context.Context) {
 			return
 		}
 		first = false
+		round++
+		e.roundEvent(round, tcpOrder, udpOrder, probed, tcpOK, udpOK, tcpMs, udpMs)
 		for _, t := range tcpOrder {
 			if !probed[t] {
 				continue
@@ -531,6 +540,45 @@ func (e *Engine) transportLoop(ctx context.Context) {
 			})
 		case <-time.After(wait):
 		}
+	}
+}
+
+// roundEvent — строка в журнал проблем: каждый круг, где что-то не прошло или было медленно (>1.5 с),
+// и «пульс» раз в ~5 минут, когда всё хорошо. Нужен, чтобы потом по журналу увидеть деградацию.
+func (e *Engine) roundEvent(round int, tcpOrder, udpOrder []string, probed, tcpOK, udpOK map[string]bool, tcpMs, udpMs map[string]time.Duration) {
+	if e.opt.Event == nil {
+		return
+	}
+	bad := false
+	var b strings.Builder
+	b.WriteString("круг " + fmt.Sprint(round) + " tcp[")
+	for _, t := range tcpOrder {
+		if !probed[t] {
+			b.WriteString(t + "=пропущен ")
+			continue
+		}
+		if tcpOK[t] {
+			b.WriteString(fmt.Sprintf("%s=%dмс ", t, tcpMs[t].Milliseconds()))
+			bad = bad || tcpMs[t] > 1500*time.Millisecond
+		} else {
+			b.WriteString(t + "=СБОЙ ")
+			bad = bad || t == e.target(swTCP)
+		}
+	}
+	b.WriteString("] udp[")
+	for _, t := range udpOrder {
+		if udpOK[t] {
+			b.WriteString(fmt.Sprintf("%s=%dмс ", t, udpMs[t].Milliseconds()))
+			bad = bad || udpMs[t] > 1500*time.Millisecond
+		} else {
+			b.WriteString(t + "=СБОЙ ")
+			bad = bad || t == e.target(swUDP)
+		}
+	}
+	b.WriteString("] выбрано tcp=" + e.target(swTCP) + " udp=" + e.target(swUDP))
+	// сбой не текущего протокола — не деградация (VLESS на плохой сети сбоит всегда) — пишем только раз в 5 мин
+	if bad || round%12 == 1 {
+		e.opt.Event(b.String())
 	}
 }
 
