@@ -13,6 +13,7 @@ push_app() {
 	echo "→ xray-src patched files"
 	scp -q "$ROOT/xray-src/transport/internet/hysteria/dialer.go" "$SERVER:/root/build/xray-src/transport/internet/hysteria/dialer.go"
 	scp -q "$ROOT/xray-src/transport/internet/hysteria/udphop/conn.go" "$SERVER:/root/build/xray-src/transport/internet/hysteria/udphop/conn.go"
+	scp -q "$ROOT/xray-src/proxy/tun/udp_fullcone.go" "$SERVER:/root/build/xray-src/proxy/tun/udp_fullcone.go"
 }
 push_android() {
 	echo "→ android"

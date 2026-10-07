@@ -197,14 +197,7 @@ func (z *zapret) parse() error {
 		s = strings.NewReplacer("%BIN%", bin, "%LISTS%", lists, "%GameFilterTCP%", "12", "%GameFilterUDP%", "12",
 			"%GameFilter%", "12").Replace(s)
 		args := splitArgs(s)
-		var out []string
-		for _, a := range args {
-			if a == "--new" {
-				out = append(out, "--ipset-exclude-ip="+z.server)
-			}
-			out = append(out, a)
-		}
-		out = append(out, "--ipset-exclude-ip="+z.server)
+		out := cleanZapretArgs(args, z.server)
 		name := strings.TrimSuffix(filepath.Base(bat), ".bat")
 		z.strategies = append(z.strategies, zStrategy{name: name, args: out})
 	}
@@ -239,6 +232,67 @@ func splitArgs(s string) []string {
 		args = append(args, cur.String())
 	}
 	return args
+}
+
+// cleanZapretArgs удаляет правила обхода Discord из Flowseal general*.bat.
+// Discord в РФ заблокирован по IP (обход DPI его не открывает), поэтому он полностью идёт через VPN.
+// Если winws перехватывает порты Discord (50000-50100) и подмешивает fake-пакеты, это ломает WebRTC и голос.
+func cleanZapretArgs(args []string, server string) []string {
+	var blocks [][]string
+	var curBlock []string
+	for _, a := range args {
+		if a == "--new" {
+			if len(curBlock) > 0 {
+				blocks = append(blocks, curBlock)
+				curBlock = nil
+			}
+		} else {
+			curBlock = append(curBlock, a)
+		}
+	}
+	if len(curBlock) > 0 {
+		blocks = append(blocks, curBlock)
+	}
+
+	for i := range blocks {
+		for j, a := range blocks[i] {
+			if strings.HasPrefix(a, "--wf-udp=") {
+				blocks[i][j] = "--wf-udp=443"
+			} else if strings.HasPrefix(a, "--wf-tcp=") {
+				cleaned := a
+				for _, p := range []string{"2053,", "2083,", "2087,", "2096,"} {
+					cleaned = strings.ReplaceAll(cleaned, p, "")
+				}
+				blocks[i][j] = cleaned
+			}
+		}
+	}
+
+	var keptBlocks [][]string
+	for _, blk := range blocks {
+		isDiscord := false
+		for _, a := range blk {
+			low := strings.ToLower(a)
+			if strings.Contains(low, "discord") || strings.Contains(low, "stun") ||
+				strings.Contains(low, "50000-50100") || strings.Contains(low, "19294-19344") {
+				isDiscord = true
+				break
+			}
+		}
+		if !isDiscord {
+			keptBlocks = append(keptBlocks, blk)
+		}
+	}
+
+	var out []string
+	for i, blk := range keptBlocks {
+		if i > 0 {
+			out = append(out, "--new")
+		}
+		out = append(out, blk...)
+		out = append(out, "--ipset-exclude-ip="+server)
+	}
+	return out
 }
 
 func (z *zapret) Outbounds() []map[string]any { return nil }

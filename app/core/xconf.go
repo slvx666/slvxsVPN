@@ -175,7 +175,7 @@ func (e *Engine) buildConfig() obj {
 		"routing":   obj{"domainStrategy": "AsIs", "rules": rules},
 		"dns":       dns,
 		"fakedns":   []obj{{"ipPool": "198.18.0.0/15", "poolSize": 65535}},
-		"policy": obj{"levels": obj{"0": obj{"handshake": 5, "connIdle": 300, "uplinkOnly": 1, "downlinkOnly": 1, "bufferSize": 8192}},
+		"policy": obj{"levels": obj{"0": obj{"handshake": 5, "connIdle": 300, "uplinkOnly": 5, "downlinkOnly": 10, "bufferSize": 8192}},
 			"system": obj{}},
 	}
 }
