@@ -21,7 +21,7 @@ import (
 )
 
 // Version — версия приложения (одна для ПК и Android).
-const Version = "1.0.48"
+const Version = "1.0.52"
 
 // Profile — подписка в формате приложения (subserver.py отдаёт её по User-Agent "VPNApp/...").
 type Profile struct {
@@ -60,6 +60,9 @@ type Service struct {
 	Mode    string   `json:"mode"`
 	Domains []string `json:"domains"`
 	Probes  []Probe  `json:"probes"`
+	// QUIC: "" — не пускать (приложение сразу уходит на TCP с обходом DPI), "direct" — напрямую
+	// (если провайдер не режет QUIC сервиса — так быстрее: без перестановки пакетов на каждое соединение)
+	QUIC string `json:"quic,omitempty"`
 }
 
 type Probe struct {

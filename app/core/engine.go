@@ -80,9 +80,11 @@ type Engine struct {
 }
 
 type cacheFile struct {
-	Bypass  map[string]string `json:"bypass"`  // сеть -> вариант обхода
-	Checked map[string]int64  `json:"checked"` // сеть -> когда подобран (unix), «none» перепроверяется
-	Last    string            `json:"last"`
+	Bypass  map[string]string   `json:"bypass"`  // сеть -> вариант обхода
+	Checked map[string]int64    `json:"checked"` // сеть -> когда подобран (unix), «none» перепроверяется
+	LatMs   map[string]int64    `json:"lat_ms"`  // сеть -> время ответа выбранного обхода (нет — подобран по-старому, перепроверить)
+	Pass    map[string][]string `json:"pass"`    // сеть -> сервисы, прошедшие с выбранным обходом (остальные — через VPN)
+	Last    string              `json:"last"`
 }
 
 func NewEngine(opt Options) *Engine {
@@ -104,6 +106,12 @@ func NewEngine(opt Options) *Engine {
 	}
 	if e.cache.Checked == nil {
 		e.cache.Checked = map[string]int64{}
+	}
+	if e.cache.LatMs == nil {
+		e.cache.LatMs = map[string]int64{}
+	}
+	if e.cache.Pass == nil {
+		e.cache.Pass = map[string][]string{}
 	}
 	return e
 }
@@ -654,12 +662,14 @@ func (e *Engine) pingLoop(ctx context.Context) {
 
 // ---------------- сервисы напрямую / через обход DPI
 
-func (e *Engine) probeService(ctx context.Context, s Service, tag string) error {
+// probeService проверяет сервис через выход tag; возвращает время самой медленной из его проб.
+func (e *Engine) probeService(ctx context.Context, s Service, tag string) (time.Duration, error) {
 	if len(s.Probes) == 0 {
-		return nil
+		return 0, nil
 	}
 	var wg sync.WaitGroup
 	errs := make([]error, len(s.Probes))
+	durs := make([]time.Duration, len(s.Probes))
 	for i, p := range s.Probes {
 		wg.Add(1)
 		go func(i int, p Probe) {
@@ -670,16 +680,18 @@ func (e *Engine) probeService(ctx context.Context, s Service, tag string) error 
 			if err == nil && d > 4500*time.Millisecond {
 				err = fmt.Errorf("медленно: %v", d.Round(100*time.Millisecond))
 			}
-			errs[i] = err
+			errs[i], durs[i] = err, d
 		}(i, p)
 	}
 	wg.Wait()
+	var slowest time.Duration
 	for i, err := range errs {
 		if err != nil {
-			return fmt.Errorf("%s: %w", s.Probes[i].URL, err)
+			return 0, fmt.Errorf("%s: %w", s.Probes[i].URL, err)
 		}
+		slowest = max(slowest, durs[i])
 	}
-	return nil
+	return slowest, nil
 }
 
 // Контрольные сайты для прямого пути: если не открываются и они, дело не в DPI, а в самом прямом пути
@@ -687,10 +699,11 @@ func (e *Engine) probeService(ctx context.Context, s Service, tag string) error 
 var directControl = []string{"https://ya.ru/", "https://vk.com/"}
 
 const (
-	svcInterval = 3 * time.Minute  // обычная перепроверка обхода
-	svcRetry    = 20 * time.Second // после сбоя — быстро, чтобы видео не висело минутами
-	noneRetry   = 6 * time.Hour    // «обход в этой сети не работает» — перепроверить через столько
-	directRetry = 2 * time.Minute  // прямой путь не работал вовсе — подбор повторить через столько
+	svcInterval = 10 * time.Minute       // обычная перепроверка обхода (пробы — ~0.5 МБ, на LTE не тратим зря)
+	fastBypass  = 800 * time.Millisecond // обход «быстрый»: самый медленный сервис ответил за это время
+	svcRetry    = 20 * time.Second       // после сбоя — быстро, чтобы видео не висело минутами
+	noneRetry   = 6 * time.Hour          // «обход в этой сети не работает» — перепроверить через столько
+	directRetry = 2 * time.Minute        // прямой путь не работал вовсе — подбор повторить через столько
 )
 
 func (e *Engine) directOK(ctx context.Context) bool {
@@ -715,7 +728,9 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 		}
 	}
 	fails := map[string]int{}
-	strategy := -1 // текущий вариант обхода
+	oks := map[string]int{}       // удачные проверки подряд (возврат из VPN в обход — после 3)
+	selected := map[string]bool{} // сервисы, прошедшие при подборе: только их поломка — повод подбирать заново
+	strategy := -1                // текущий вариант обхода
 	bypassTag := ""
 	netKey := ""
 	lastSearch := time.Time{}
@@ -755,16 +770,23 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 			return true
 		}
 		i := indexOf(e.opt.Bypass.Strategies(), name)
-		if i < 0 {
-			return false
+		if _, ok := e.cache.LatMs[netKey]; i < 0 || !ok {
+			return false // подобран без учёта скорости — подобрать заново
 		}
 		tag, err := e.opt.Bypass.Apply(ctx, i)
 		if err != nil {
 			return false
 		}
 		strategy, bypassTag = i, tag
+		pass, known := e.cache.Pass[netKey]
+		selected = map[string]bool{}
 		for _, s := range bypass {
-			e.setTarget(swService(s.ID), tag)
+			selected[s.ID] = !known || indexOf(pass, s.ID) >= 0
+			if selected[s.ID] {
+				e.setTarget(swService(s.ID), tag)
+			} else {
+				e.setTarget(swService(s.ID), swTCP)
+			}
 		}
 		return true
 	}
@@ -781,6 +803,8 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 			return
 		}
 		directBroken = false
+		// пока перебираем варианты, живой трафик сервисов — через VPN (иначе видео рвётся на неудачных вариантах)
+		toVPN()
 		names := e.opt.Bypass.Strategies()
 		order := make([]int, 0, len(names))
 		if strategy >= 0 {
@@ -794,7 +818,11 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 				order = append(order, i)
 			}
 		}
+		// лучший — больше сервисов, при равенстве — быстрее (стратегии с перестановкой пакетов работают, но
+		// каждое новое соединение ждёт повтора TCP ~0.2-0.5 с — Shorts и превью «думают»). Нашли рабочую и
+		// быструю — дальше не ищем; рабочую, но медленную — проверяем остальные и берём самую быструю.
 		best, bestScore, bestTag := -1, 0, ""
+		var bestLat time.Duration
 		var bestPass map[string]bool
 		for _, i := range order {
 			if ctx.Err() != nil {
@@ -805,31 +833,36 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 				e.opt.Logf("bypass %s: %v", names[i], err)
 				continue
 			}
+			// очки с приоритетом по порядку сервисов в подписке (YouTube > Twitch > Discord): вариант, где
+			// проходит YouTube, лучше варианта без YouTube, сколько бы остальных он ни пропускал
 			pass := map[string]bool{}
-			score := 0
+			score, passed := 0, 0
+			var lat time.Duration // самый медленный из прошедших сервисов
 			var wg sync.WaitGroup
 			var mu sync.Mutex
-			for _, s := range bypass {
+			for si, s := range bypass {
 				wg.Add(1)
-				go func(s Service) {
+				go func(si int, s Service) {
 					defer wg.Done()
-					err := e.probeService(ctx, s, tag)
+					d, err := e.probeService(ctx, s, tag)
 					mu.Lock()
 					defer mu.Unlock()
 					if err == nil {
 						pass[s.ID] = true
-						score++
+						score += 1 << (len(bypass) - 1 - si)
+						passed++
+						lat = max(lat, d)
 					} else {
 						e.opt.Logf("bypass %s / %s: %v", names[i], s.ID, err)
 					}
-				}(s)
+				}(si, s)
 			}
 			wg.Wait()
-			e.opt.Logf("bypass %s: %d/%d", names[i], score, len(bypass))
-			if score > bestScore {
-				best, bestScore, bestTag, bestPass = i, score, tag, pass
+			e.opt.Logf("bypass %s: %d/%d за %v", names[i], passed, len(bypass), lat.Round(10*time.Millisecond))
+			if score > bestScore || (score == bestScore && score > 0 && lat < bestLat) {
+				best, bestScore, bestTag, bestPass, bestLat = i, score, tag, pass, lat
 			}
-			if score == len(bypass) {
+			if passed == len(bypass) && lat <= fastBypass {
 				break
 			}
 		}
@@ -850,10 +883,19 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 		}
 		strategy, bypassTag = best, bestTag
 		e.cache.Bypass[netKey] = names[best]
+		e.cache.LatMs[netKey] = bestLat.Milliseconds()
+		e.cache.Pass[netKey] = nil
+		selected = map[string]bool{}
+		for _, s := range bypass {
+			if bestPass[s.ID] {
+				e.cache.Pass[netKey] = append(e.cache.Pass[netKey], s.ID)
+				selected[s.ID] = true
+			}
+		}
 		e.cache.Last = names[best]
 		e.saveCache()
 		for _, s := range bypass {
-			fails[s.ID] = 0
+			fails[s.ID], oks[s.ID] = 0, 0
 			if bestPass[s.ID] {
 				e.setTarget(swService(s.ID), bypassTag)
 			} else {
@@ -867,7 +909,7 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 		defer publish()
 		// прямые (загрузки Steam и т.п.): напрямую, пока работает
 		for _, s := range direct {
-			err := e.probeService(ctx, s, tagDirect)
+			_, err := e.probeService(ctx, s, tagDirect)
 			if err == nil {
 				fails[s.ID] = 0
 				e.setTarget(swService(s.ID), tagDirect)
@@ -901,16 +943,30 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 		}
 		broken := 0
 		for _, s := range bypass {
-			if err := e.probeService(ctx, s, bypassTag); err == nil {
+			sw := swService(s.ID)
+			if _, err := e.probeService(ctx, s, bypassTag); err == nil {
 				fails[s.ID] = 0
-				e.setTarget(swService(s.ID), bypassTag)
+				oks[s.ID]++
+				// из VPN обратно в обход — только после 3 удачных подряд (иначе сервис «прыгает» туда-обратно)
+				if e.target(sw) == bypassTag || oks[s.ID] >= 3 {
+					e.setTarget(sw, bypassTag)
+				}
 			} else {
-				e.opt.Logf("check %s: %v", s.ID, err)
+				if selected[s.ID] {
+					e.opt.Logf("check %s: %v", s.ID, err)
+				}
 				fails[s.ID]++
-				trouble = true
+				oks[s.ID] = 0
 				if fails[s.ID] >= 2 {
-					e.setTarget(swService(s.ID), swTCP)
-					broken++
+					e.setTarget(sw, swTCP)
+				}
+				// частые проверки и новый подбор — только если сломалось то, что при подборе работало
+				// (сервис, не прошедший подбор, и так в VPN — его неудачи ничего не меняют)
+				if selected[s.ID] {
+					trouble = true
+					if fails[s.ID] >= 2 {
+						broken++
+					}
 				}
 			}
 		}

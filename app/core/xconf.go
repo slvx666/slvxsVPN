@@ -125,8 +125,13 @@ func (e *Engine) buildConfig() obj {
 	}
 	for _, s := range p.Services {
 		if len(s.Domains) > 0 {
-			// QUIC сервиса не пускаем (браузер сразу уходит на TCP — его обходит zapret/ByeDPI)
-			rules = append(rules, obj{"domain": s.Domains, "network": "udp", "port": "443", "outboundTag": tagBlock})
+			// QUIC сервиса по умолчанию не пускаем (приложение сразу уходит на TCP — его обходит zapret/ByeDPI);
+			// quic=direct из подписки — пустить напрямую (Android: быстрее, чем TCP через ByeDPI)
+			quic := tagBlock
+			if s.QUIC == "direct" {
+				quic = tagDirect
+			}
+			rules = append(rules, obj{"domain": s.Domains, "network": "udp", "port": "443", "outboundTag": quic})
 			rules = append(rules, obj{"domain": s.Domains, "outboundTag": swService(s.ID)})
 		}
 	}

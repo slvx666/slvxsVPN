@@ -36,6 +36,9 @@ APP_SERVICES = [
 APP_DIRECT = ["domain:ru", "domain:su", "domain:xn--p1ai", "geosite:category-ru", "geosite:category-gov-ru",
               "geosite:ru-available-only-inside"]
 APP_BLOCKED = ["geosite:ru-blocked-ru", "domain:discord.media"]
+# Android: QUIC этих сервисов — напрямую (TCP через ByeDPI на каждое соединение ждёт повтора ~0.5 с;
+# приложение YouTube сначала пробует QUIC). ПК не трогаем: там zapret и TCP быстрые.
+APP_QUIC_DIRECT_ANDROID = {"youtube"}
 
 
 def cert_pin():
@@ -48,7 +51,7 @@ def cert_pin():
         return "865de47fb55fddb470e917d6cee77b38417194e16e1c03b94d7649469324519b"
 
 
-def app_profile(cfg, u, base):
+def app_profile(cfg, u, base, ua=""):
     try:
         man = json.load(open(f"{APP}/manifest.json"))
     except Exception:
@@ -60,9 +63,19 @@ def app_profile(cfg, u, base):
         "server": cfg["server"], "port": cfg["port"], "sni": cfg["sni"], "pbk": cfg["publicKey"],
         "sid": u["shortId"], "uuid": u["uuid"], "xhttp_path": cfg["xhttp_path"],
         "hy2": {"obfs": cfg["hy2_obfs"], "hop": cfg["hy2_hop"], "sni": cfg["server"], "pin_sha256": cert_pin()},
-        "direct_domains": APP_DIRECT, "blocked_domains": APP_BLOCKED, "services": APP_SERVICES,
+        "direct_domains": APP_DIRECT, "blocked_domains": APP_BLOCKED, "services": services_for(ua),
         "files": files,
     }
+
+
+def services_for(ua):
+    import copy
+    svcs = copy.deepcopy(APP_SERVICES)
+    if "(android)" in ua:
+        for s in svcs:
+            if s["id"] in APP_QUIC_DIRECT_ANDROID:
+                s["quic"] = "direct"
+    return svcs
 
 
 def traffic(name):
@@ -214,7 +227,7 @@ class H(BaseHTTPRequestHandler):
         mine = links[u["name"]]
         if ua.startswith("VPNApp/"):
             base = f"https://{cfg['server']}:{cfg['sub_port']}/sub/{u['token']}"
-            self.send(json.dumps(app_profile(cfg, u, base), ensure_ascii=False).encode(), "application/json; charset=utf-8")
+            self.send(json.dumps(app_profile(cfg, u, base, ua), ensure_ascii=False).encode(), "application/json; charset=utf-8")
             return
         if "Mozilla" in ua and "text/html" in accept:
             url = f"https://{cfg['server']}:{cfg['sub_port']}/sub/{u['token']}"

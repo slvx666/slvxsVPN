@@ -29,6 +29,12 @@ type strategy struct {
 // Go-клиентом с MLKEM ~45 Мбит/с. Пробы движка — на Go (тоже MLKEM), т.е. проверяют ровно этот случай.
 var strategies = []strategy{
 	{"none", nil, "direct"},
+	// без перестановки пакетов (disorder/disoob): у тех сервер ждёт повтора TCP ~0.2-0.5 с на КАЖДОЕ новое
+	// соединение — работают, но Shorts/превью «думают». Эти — разрезание TLS-записи/TCP у SNI, OOB, фейк с md5sig.
+	{"bd-rec-sni", []string{"-r1+s", "-s1+s", "-Y"}, "bdpi"},
+	{"bd-rec-sni2", []string{"-s1", "-r1+s", "-s3+s", "-s5+s", "-Y"}, "bdpi"},
+	{"bd-oob-sni", []string{"-s1", "-o1+s", "-s3+s", "-Y"}, "bdpi"},
+	{"bd-fake-md5", []string{"-s1", "-f1+s", "-S", "-s3+s"}, "bdpi"},
 	{"bd-q3-sack", []string{"-s1", "-q1+s", "-s3+s", "-Y"}, "bdpi"},
 	{"bd-q5-sack", []string{"-s1", "-q1+s", "-s5+s", "-Y"}, "bdpi"},
 	{"bd-q35-sack", []string{"-s1", "-q1+s", "-s3+s", "-s5+s", "-Y"}, "bdpi"},
