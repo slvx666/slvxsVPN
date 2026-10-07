@@ -36,5 +36,5 @@
 ## Installation
 
 Download the latest binaries from the [**Releases Page**](https://github.com/slvx666/slvxsVPN/releases/latest):
-- **Windows:** `VPN-Windows-v1.0.48.exe` (standalone portable executable)
-- **Android:** `VPN-Android-v1.0.48.apk` (Android 8.0+)
+- **Windows:** `VPN-Windows-v1.0.52.exe` (standalone portable executable)
+- **Android:** `VPN-Android-v1.0.52.apk` (Android 8.0+)
