@@ -16,6 +16,7 @@ type persist struct {
 	PrevSmartDNS int    `json:"prev_smart_dns"` // -2 не трогали, -1 значения не было, >=0 прежнее
 	WantOn       bool   `json:"want_on"`        // был ли включён VPN — для автозапуска
 	LastSub      string `json:"last_sub"`
+	ScanOffIface string `json:"scan_off_iface,omitempty"` // игровой режим выключил автонастройку Wi-Fi на этом адаптере
 }
 
 func loadPersist(dir string) *persist {

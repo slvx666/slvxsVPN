@@ -21,7 +21,7 @@ import (
 )
 
 // Version — версия приложения (одна для ПК и Android).
-const Version = "1.0.9"
+const Version = "1.0.48"
 
 // Profile — подписка в формате приложения (subserver.py отдаёт её по User-Agent "VPNApp/...").
 type Profile struct {

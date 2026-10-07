@@ -17,8 +17,15 @@ APP_SERVICES = [
     {"id": "youtube", "mode": "bypass", "domains": ["geosite:youtube"],   # без рекламы: в РФ её не показывают
      "probes": [{"url": "https://www.youtube.com/", "min_bytes": 100000},
                 {"url": "https://redirector.googlevideo.com/report_mapping", "min_bytes": 20000}]},
-    {"id": "twitch", "mode": "direct", "domains": ["geosite:twitch"],
-     "probes": [{"url": "https://www.twitch.tv/robots.txt", "min_bytes": 0}]},
+    {"id": "twitch", "mode": "bypass", "domains": ["geosite:twitch"],   # без рекламы VPN-региона
+     "probes": [{"url": "https://www.twitch.tv/", "min_bytes": 100000},
+                {"url": "https://usher.ttvnw.net/", "min_bytes": 0}]},
+    # Discord: сайт, API, CDN — напрямую через обход, если провайдер пропускает; иначе VPN.
+    # Голос (discord.media) — всегда VPN (APP_BLOCKED): голосовые серверы в РФ заблокированы по IP.
+    {"id": "discord", "mode": "bypass", "domains": ["geosite:discord"],
+     "probes": [{"url": "https://discord.com/", "min_bytes": 160000},  # вся страница: обход, «застревающий» на середине, не годится
+                {"url": "https://discord.com/api/v9/gateway", "min_bytes": 0},
+                {"url": "https://cdn.discordapp.com/embed/avatars/0.png", "min_bytes": 0}]},
     # Steam — только раздача игр/обновлений (российские CDN быстрее); вход, магазин, игры — через VPN
     {"id": "steam", "mode": "direct", "probes": [], "domains": [
         "domain:steamcontent.com", "domain:steampipe.akamaized.net", "domain:steamcdn-a.akamaihd.net",
@@ -28,7 +35,7 @@ APP_SERVICES = [
 # напрямую: российские сайты и сервисы; заблокированные сайты в зоне .ru (ru-blocked-ru) — через VPN
 APP_DIRECT = ["domain:ru", "domain:su", "domain:xn--p1ai", "geosite:category-ru", "geosite:category-gov-ru",
               "geosite:ru-available-only-inside"]
-APP_BLOCKED = ["geosite:ru-blocked-ru"]
+APP_BLOCKED = ["geosite:ru-blocked-ru", "domain:discord.media"]
 
 
 def cert_pin():

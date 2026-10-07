@@ -16,37 +16,39 @@ import (
 	"sync"
 	"time"
 
-	xcore "github.com/xtls/xray-core/core"
 	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/session"
+	xcore "github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/infra/conf/serial"
 	_ "github.com/xtls/xray-core/main/distro/all"
+	"github.com/xtls/xray-core/transport/internet/hysteria"
 )
 
 // Bypass — встроенный обход DPI для сервисов mode=bypass (ПК: zapret/winws, Android: ByeDPI).
 type Bypass interface {
-	Outbounds() []obj                             // дополнительные выходы Xray (например, SOCKS до ByeDPI)
-	Strategies() []string                         // варианты обхода по порядку; 0 — «без обхода»
+	Outbounds() []obj                                 // дополнительные выходы Xray (например, SOCKS до ByeDPI)
+	Strategies() []string                             // варианты обхода по порядку; 0 — «без обхода»
 	Apply(ctx context.Context, i int) (string, error) // включить вариант i, вернуть тег выхода; i<0 — выключить
 	Stop()
 }
 
 type Options struct {
-	DataDir   string
-	AssetDir  string // geoip.dat / geosite.dat
-	TunName   string
-	BindIface string // ПК: имя реального адаптера (исходящие соединения Xray мимо туннеля)
-	Platform  string
-	LogLevel  string
-	ErrorLog  string // файл лога ошибок Xray (для диагностики паник в TUN)
-	AccessLog string // журнал соединений Xray (диагностика маршрутов; пусто — выключен)
-	Bypass    Bypass
-	NetKey    func() string                 // «отпечаток» текущей сети — для запоминания удачного обхода
-	OnState   func(State)                   // вызывается при каждом изменении
-	Logf      func(format string, a ...any) //
-	BeforeStart func() error                // Android: передать Xray дескриптор TUN
-	AfterStart  func() error                // ПК: адрес/маршруты/DNS адаптера
+	DataDir     string
+	AssetDir    string // geoip.dat / geosite.dat
+	TunName     string
+	BindIface   string // ПК: имя реального адаптера (исходящие соединения Xray мимо туннеля)
+	Platform    string
+	NoTUN       bool // стенд проверки: ядро без TUN, только выходы и проверки
+	LogLevel    string
+	ErrorLog    string // файл лога ошибок Xray (для диагностики паник в TUN)
+	AccessLog   string // журнал соединений Xray (диагностика маршрутов; пусто — выключен)
+	Bypass      Bypass
+	NetKey      func() string                 // «отпечаток» текущей сети — для запоминания удачного обхода
+	OnState     func(State)                   // вызывается при каждом изменении
+	Logf        func(format string, a ...any) //
+	BeforeStart func() error                  // Android: передать Xray дескриптор TUN
+	AfterStart  func() error                  // ПК: адрес/маршруты/DNS адаптера
 }
 
 type State struct {
@@ -69,7 +71,8 @@ type Engine struct {
 	targets  map[string]string // выбор переключателей переживает перезапуск ядра
 	ctx      context.Context
 	cancel   context.CancelFunc
-	kick     chan struct{} // «проверь сейчас» (смена сети)
+	kick     chan struct{} // «проверь сейчас» (смена сети) — протоколы
+	kickSvc  chan struct{} // то же для сервисов (обход DPI)
 	st       State
 	running  bool
 
@@ -77,8 +80,9 @@ type Engine struct {
 }
 
 type cacheFile struct {
-	Bypass map[string]string `json:"bypass"` // сеть -> вариант обхода
-	Last   string            `json:"last"`
+	Bypass  map[string]string `json:"bypass"`  // сеть -> вариант обхода
+	Checked map[string]int64  `json:"checked"` // сеть -> когда подобран (unix), «none» перепроверяется
+	Last    string            `json:"last"`
 }
 
 func NewEngine(opt Options) *Engine {
@@ -97,6 +101,9 @@ func NewEngine(opt Options) *Engine {
 	}
 	if e.cache.Bypass == nil {
 		e.cache.Bypass = map[string]string{}
+	}
+	if e.cache.Checked == nil {
+		e.cache.Checked = map[string]int64{}
 	}
 	return e
 }
@@ -130,6 +137,7 @@ func (e *Engine) Start(p *Profile) error {
 	e.running = true
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	e.kick = make(chan struct{}, 1)
+	e.kickSvc = make(chan struct{}, 1)
 	e.mu.Unlock()
 
 	e.setState(func(s *State) { *s = State{State: "connecting", Detail: "Подбираю лучший путь"} })
@@ -226,20 +234,30 @@ func (e *Engine) Restart(bindIface string) error {
 	if inst != nil {
 		inst.Close()
 	}
+	hysteria.ResetClients() // клиент Hysteria2 глобальный: иначе остался бы со старым адаптером
 	err := e.startCore()
 	e.Kick()
 	return err
 }
 
+// NetworkChanged — сменилась сеть без пересоздания ядра (Android: Wi-Fi <-> LTE). Соединения Hysteria2
+// привязаны к старой сети и висели бы до таймаута простоя — закрываем их сразу, приложения переподключатся.
+func (e *Engine) NetworkChanged() {
+	hysteria.ResetClients()
+	e.Kick()
+}
+
 // Kick — проверить всё прямо сейчас (например, после смены сети).
 func (e *Engine) Kick() {
 	e.mu.Lock()
-	k := e.kick
+	ks := []chan struct{}{e.kick, e.kickSvc}
 	e.mu.Unlock()
-	if k != nil {
-		select {
-		case k <- struct{}{}:
-		default:
+	for _, k := range ks {
+		if k != nil {
+			select {
+			case k <- struct{}{}:
+			default:
+			}
 		}
 	}
 }
@@ -401,11 +419,19 @@ func (e *Engine) transportLoop(ctx context.Context) {
 	}
 	downRounds := 0
 	first := true
+	// протокол, который стабильно не проходит (дома VLESS рвут 9 из 10), проверяем раз в 3 мин, а не каждые
+	// 20 с: лишние оборванные соединения к серверу только привлекают внимание DPI. Смена сети — всё заново.
+	next := map[string]time.Time{}
 	for {
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		tcpOK, udpOK := map[string]bool{}, map[string]bool{}
+		probed := map[string]bool{}
 		for _, t := range tcpOrder {
+			if !first && time.Now().Before(next[t]) {
+				continue
+			}
+			probed[t] = true
 			wg.Add(2)
 			go func(t string) {
 				defer wg.Done()
@@ -424,6 +450,9 @@ func (e *Engine) transportLoop(ctx context.Context) {
 			}(t)
 			go func(t string) {
 				defer wg.Done()
+				if indexOf(udpOrder, t) < 0 {
+					return // UDP поверх XHTTP (TCP) для игр и голоса не годится — не проверяем и не выбираем
+				}
 				err := e.probeUDP(ctx, t, 4*time.Second)
 				mu.Lock()
 				udpOK[t] = err == nil
@@ -431,7 +460,9 @@ func (e *Engine) transportLoop(ctx context.Context) {
 				if err != nil {
 					e.opt.Logf("probe udp %s: %v", t, err)
 				}
-				if err == nil && first {
+				// первый круг: UDP сразу на Hysteria2, если он ответил (иначе «кто первый» — и UDP
+				// застревал на запасном протоколе); остальное решит choose() после круга
+				if err == nil && first && t == udpOrder[0] {
 					e.setTarget(swUDP, t)
 				}
 			}(t)
@@ -442,8 +473,16 @@ func (e *Engine) transportLoop(ctx context.Context) {
 		}
 		first = false
 		for _, t := range tcpOrder {
+			if !probed[t] {
+				continue
+			}
 			upd(tcp[t], tcpOK[t])
 			upd(udp[t], udpOK[t])
+			if tcp[t].fail >= 4 && t != e.target(swTCP) {
+				next[t] = time.Now().Add(3 * time.Minute)
+			} else {
+				delete(next, t)
+			}
 		}
 		if best := choose(tcpOrder, tcp, e.target(swTCP)); best != "" {
 			e.setTarget(swTCP, best)
@@ -476,6 +515,7 @@ func (e *Engine) transportLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-e.kick:
+			next = map[string]time.Time{}
 			e.setState(func(s *State) {
 				if s.State != "on" {
 					s.Detail = "Подбираю лучший путь"
@@ -525,12 +565,15 @@ func (s *streak) rate() (float64, int) {
 func choose(order []string, st map[string]*streak, cur string) string {
 	good := func(s *streak) bool { r, n := s.rate(); return n > 0 && r >= 0.8 && s.fail < 2 }
 	strong := func(s *streak) bool { r, n := s.rate(); return n >= 5 && r >= 0.95 && s.fail == 0 }
-	if c := st[cur]; c != nil {
+	if c := st[cur]; c != nil && indexOf(order, cur) >= 0 {
+		_, curN := c.rate()
 		for _, t := range order {
 			if t == cur {
 				break
 			}
-			if strong(st[t]) {
+			// более приоритетный: стабилен давно — или проверок пока мало у обоих (первые круги после
+			// старта/смены сети: текущий выбран «кто первый ответил», а не по приоритету)
+			if strong(st[t]) || (curN < 5 && good(st[t])) {
 				return t
 			}
 		}
@@ -621,7 +664,13 @@ func (e *Engine) probeService(ctx context.Context, s Service, tag string) error 
 		wg.Add(1)
 		go func(i int, p Probe) {
 			defer wg.Done()
-			_, errs[i] = e.probeHTTP(ctx, tag, p.URL, p.MinBytes, 9*time.Second)
+			d, err := e.probeHTTP(ctx, tag, p.URL, p.MinBytes, 9*time.Second)
+			// медленный ответ — тоже провал: так выглядит обход, срабатывающий лишь после 5-секундного
+			// таймаута (ByeDPI --auto=torst), — видео и страницы с ним «думают» по 5 с
+			if err == nil && d > 4500*time.Millisecond {
+				err = fmt.Errorf("медленно: %v", d.Round(100*time.Millisecond))
+			}
+			errs[i] = err
 		}(i, p)
 	}
 	wg.Wait()
@@ -631,6 +680,28 @@ func (e *Engine) probeService(ctx context.Context, s Service, tag string) error 
 		}
 	}
 	return nil
+}
+
+// Контрольные сайты для прямого пути: если не открываются и они, дело не в DPI, а в самом прямом пути
+// (нет интернета, брандмауэр, «белые списки» мобильного оператора) — такой результат не запоминаем.
+var directControl = []string{"https://ya.ru/", "https://vk.com/"}
+
+const (
+	svcInterval = 3 * time.Minute  // обычная перепроверка обхода
+	svcRetry    = 20 * time.Second // после сбоя — быстро, чтобы видео не висело минутами
+	noneRetry   = 6 * time.Hour    // «обход в этой сети не работает» — перепроверить через столько
+	directRetry = 2 * time.Minute  // прямой путь не работал вовсе — подбор повторить через столько
+)
+
+func (e *Engine) directOK(ctx context.Context) bool {
+	for _, u := range directControl {
+		if _, err := e.probeHTTP(ctx, tagDirect, u, 0, 8*time.Second); err == nil {
+			return true
+		} else {
+			e.opt.Logf("direct control %s: %v", u, err)
+		}
+	}
+	return false
 }
 
 func (e *Engine) serviceLoop(ctx context.Context) {
@@ -648,29 +719,68 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 	bypassTag := ""
 	netKey := ""
 	lastSearch := time.Time{}
+	directBroken := false // последний подбор не состоялся: прямой путь не работал вовсе
 
-	// сначала — как было в этой сети в прошлый раз (сервисы сразу идут напрямую, проверка — следом)
-	if len(bypass) > 0 {
-		netKey = e.opt.NetKey()
-		if name, ok := e.cache.Bypass[netKey]; ok {
-			if name == "none" {
-				strategy, bypassTag = -1, ""
-				for _, s := range bypass {
-					e.setTarget(swService(s.ID), swTCP)
-				}
-			} else if i := indexOf(e.opt.Bypass.Strategies(), name); i >= 0 {
-				if tag, err := e.opt.Bypass.Apply(ctx, i); err == nil {
-					strategy, bypassTag = i, tag
-					for _, s := range bypass {
-						e.setTarget(swService(s.ID), tag)
-					}
-				}
-			}
+	toVPN := func() {
+		for _, s := range bypass {
+			e.setTarget(swService(s.ID), swTCP)
 		}
+	}
+	publish := func() {
+		e.setState(func(st *State) {
+			st.Services = map[string]string{}
+			for _, s := range p.Services {
+				st.Services[s.ID] = e.targets[swService(s.ID)]
+			}
+			if strategy > 0 {
+				st.Bypass = e.opt.Bypass.Strategies()[strategy]
+			} else {
+				st.Bypass = ""
+			}
+		})
+	}
+	// applyCached — как было в этой сети в прошлый раз (сервисы сразу идут напрямую, проверка — следом)
+	applyCached := func() bool {
+		name, ok := e.cache.Bypass[netKey]
+		if !ok {
+			return false
+		}
+		if name == "none" {
+			if time.Since(time.Unix(e.cache.Checked[netKey], 0)) > noneRetry {
+				return false // давно — подобрать заново
+			}
+			strategy, bypassTag = -1, ""
+			_, _ = e.opt.Bypass.Apply(ctx, -1)
+			toVPN()
+			return true
+		}
+		i := indexOf(e.opt.Bypass.Strategies(), name)
+		if i < 0 {
+			return false
+		}
+		tag, err := e.opt.Bypass.Apply(ctx, i)
+		if err != nil {
+			return false
+		}
+		strategy, bypassTag = i, tag
+		for _, s := range bypass {
+			e.setTarget(swService(s.ID), tag)
+		}
+		return true
 	}
 
 	search := func() {
 		lastSearch = time.Now()
+		if !e.directOK(ctx) {
+			// прямой путь не работает совсем — обход тут ни при чём; сервисы через VPN, подбор повторим позже
+			e.opt.Logf("bypass: прямой путь недоступен, сервисы через VPN, повтор через %v", directRetry)
+			directBroken = true
+			if strategy < 0 {
+				toVPN()
+			}
+			return
+		}
+		directBroken = false
 		names := e.opt.Bypass.Strategies()
 		order := make([]int, 0, len(names))
 		if strategy >= 0 {
@@ -723,15 +833,16 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 				break
 			}
 		}
+		if ctx.Err() != nil {
+			return
+		}
+		e.cache.Checked[netKey] = time.Now().Unix()
 		if best < 0 {
 			e.opt.Bypass.Apply(ctx, -1)
 			strategy, bypassTag = -1, ""
 			e.cache.Bypass[netKey] = "none"
 			e.saveCache()
-			for _, s := range bypass {
-				e.setTarget(swService(s.ID), swTCP)
-			}
-			e.setState(func(st *State) { st.Bypass = "" })
+			toVPN()
 			return
 		}
 		if _, err := e.opt.Bypass.Apply(ctx, best); err != nil {
@@ -742,18 +853,19 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 		e.cache.Last = names[best]
 		e.saveCache()
 		for _, s := range bypass {
+			fails[s.ID] = 0
 			if bestPass[s.ID] {
 				e.setTarget(swService(s.ID), bypassTag)
-				fails[s.ID] = 0
 			} else {
 				e.setTarget(swService(s.ID), swTCP)
 			}
 		}
-		e.setState(func(st *State) { st.Bypass = names[best] })
 	}
 
-	check := func() {
-		// прямые (twitch, steam): напрямую, пока работает
+	// check возвращает true, если что-то не прошло (тогда следующая проверка — скоро)
+	check := func() (trouble bool) {
+		defer publish()
+		// прямые (загрузки Steam и т.п.): напрямую, пока работает
 		for _, s := range direct {
 			err := e.probeService(ctx, s, tagDirect)
 			if err == nil {
@@ -761,36 +873,33 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 				e.setTarget(swService(s.ID), tagDirect)
 			} else if fails[s.ID]++; fails[s.ID] >= 2 || e.target(swService(s.ID)) == swTCP {
 				e.setTarget(swService(s.ID), swTCP)
+				trouble = true
 			}
 		}
 		if len(bypass) == 0 {
 			return
 		}
 		if k := e.opt.NetKey(); k != netKey {
+			e.opt.Logf("bypass: сеть %q", k)
 			netKey = k
-			if name, ok := e.cache.Bypass[k]; ok {
-				if name == "none" {
-					strategy, bypassTag = -1, ""
-					_, _ = e.opt.Bypass.Apply(ctx, -1)
-					for _, s := range bypass {
-						e.setTarget(swService(s.ID), swTCP)
-					}
-				} else if i := indexOf(e.opt.Bypass.Strategies(), name); i >= 0 && i != strategy {
-					if tag, err := e.opt.Bypass.Apply(ctx, i); err == nil {
-						strategy, bypassTag = i, tag
-					}
-				}
-			} else {
-				lastSearch = time.Time{}
+			if !applyCached() {
+				search()
+				return directBroken
 			}
 		}
 		if strategy < 0 {
-			if e.cache.Bypass[netKey] != "none" && time.Since(lastSearch) > 2*time.Hour {
+			name, cached := e.cache.Bypass[netKey]
+			switch {
+			case directBroken && time.Since(lastSearch) >= directRetry:
+				search()
+			case !cached && !directBroken:
+				search()
+			case cached && name == "none" && time.Since(time.Unix(e.cache.Checked[netKey], 0)) > noneRetry:
 				search()
 			}
-			return
+			return directBroken
 		}
-		broken, onVPN := 0, 0
+		broken := 0
 		for _, s := range bypass {
 			if err := e.probeService(ctx, s, bypassTag); err == nil {
 				fails[s.ID] = 0
@@ -798,41 +907,50 @@ func (e *Engine) serviceLoop(ctx context.Context) {
 			} else {
 				e.opt.Logf("check %s: %v", s.ID, err)
 				fails[s.ID]++
+				trouble = true
 				if fails[s.ID] >= 2 {
 					e.setTarget(swService(s.ID), swTCP)
+					broken++
 				}
 			}
-			if fails[s.ID] >= 2 {
-				broken++
-			}
-			if e.target(swService(s.ID)) == swTCP {
-				onVPN++
-			}
 		}
-		if broken > 0 && time.Since(lastSearch) > 30*time.Minute && strategy >= 0 {
+		if broken > 0 && time.Since(lastSearch) > 30*time.Minute {
 			search()
 		}
-		e.setState(func(st *State) {
-			st.Services = map[string]string{}
-			for _, s := range p.Services {
-				st.Services[s.ID] = e.targets[swService(s.ID)]
-			}
-		})
+		return
 	}
 
-	// первая проверка — сразу; поиск обхода, если в этой сети ещё не искали
-	time.Sleep(1500 * time.Millisecond)
-	if len(bypass) > 0 && strategy < 0 && e.cache.Bypass[netKey] != "none" {
-		search()
+	// первая проверка — почти сразу; поиск обхода, если в этой сети ещё не искали
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(1500 * time.Millisecond):
 	}
-	check()
+	if len(bypass) > 0 {
+		netKey = e.opt.NetKey()
+		if !applyCached() {
+			search()
+		}
+	}
+	trouble := check()
 	for {
+		wait := svcInterval
+		if trouble {
+			wait = svcRetry
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(3 * time.Minute):
+		case <-e.kickSvc:
+			// смена сети: дать сети подняться и перепроверить (новая сеть — свой вариант обхода)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		case <-time.After(wait):
 		}
-		check()
+		trouble = check()
 	}
 }
 

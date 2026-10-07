@@ -47,3 +47,18 @@ func TestChooseFlaky(t *testing.T) {
 		t.Fatalf("want vless when stable, got %s", cur)
 	}
 }
+
+// первый круг: текущий выбран «кто первый ответил» — переходим на приоритетный, если он тоже ответил
+func TestChooseStartupPriority(t *testing.T) {
+	order := []string{tagHy2, tagVLESS}
+	st := map[string]*streak{tagHy2: {}, tagVLESS: {}, tagXHTTP: {}}
+	upd(st[tagHy2], true)
+	upd(st[tagVLESS], true)
+	upd(st[tagXHTTP], true)
+	if got := choose(order, st, tagXHTTP); got != tagHy2 {
+		t.Fatalf("cur not in order: want hy2, got %s", got)
+	}
+	if got := choose(order, st, tagVLESS); got != tagHy2 {
+		t.Fatalf("short history: want hy2, got %s", got)
+	}
+}

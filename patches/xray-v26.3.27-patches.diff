@@ -96,10 +96,17 @@ index 31fc43c..cd9cc58 100644
  	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
  		t := &Handler{config: config.(*Config)}
 diff --git a/proxy/tun/udp_fullcone.go b/proxy/tun/udp_fullcone.go
-index df58ce4..f3037e9 100644
+index df58ce4..82b6889 100644
 --- a/proxy/tun/udp_fullcone.go
 +++ b/proxy/tun/udp_fullcone.go
-@@ -40,13 +40,14 @@ func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destina
+@@ -34,19 +34,20 @@ func (u *udpConnectionHandler) HandlePacket(src net.Destination, dst net.Destina
+ 	u.Lock()
+ 	conn, found := u.udpConns[src]
+ 	if !found {
+-		egress := make(chan []byte, 16)
++		egress := make(chan []byte, 2048)
+ 		conn = &udpConn{handler: u, egress: egress, src: src, dst: dst}
+ 		u.udpConns[src] = conn
  
  		go u.handleConnection(conn, dst)
  	}
@@ -117,3 +124,103 @@ index df58ce4..f3037e9 100644
  
  	return true
  }
+diff --git a/transport/internet/hysteria/dialer.go b/transport/internet/hysteria/dialer.go
+index d305b00..42b5974 100644
+--- a/transport/internet/hysteria/dialer.go
++++ b/transport/internet/hysteria/dialer.go
+@@ -198,6 +198,19 @@ func (c *client) dial() error {
+ 		return errors.New("unknown conn ", reflect.TypeOf(conn))
+ 	}
+ 
++	type bufferSetter interface {
++		SetReadBuffer(bytes int) error
++		SetWriteBuffer(bytes int) error
++	}
++	if bs, ok := raw.(bufferSetter); ok {
++		_ = bs.SetReadBuffer(8 * 1024 * 1024)
++		_ = bs.SetWriteBuffer(8 * 1024 * 1024)
++	}
++	if bs, ok := pktConn.(bufferSetter); ok {
++		_ = bs.SetReadBuffer(8 * 1024 * 1024)
++		_ = bs.SetWriteBuffer(8 * 1024 * 1024)
++	}
++
+ 	if len(quicParams.UdpHop.Ports) > 0 {
+ 		addr := &udphop.UDPHopAddr{
+ 			IP:    remote.IP,
+@@ -436,6 +449,23 @@ func (m *clientManager) clean() {
+ 
+ var manger *clientManager
+ 
++// ResetClients закрывает все QUIC-соединения и забывает клиентов (патч приложения VPN).
++// Клиент живёт в глобальной таблице и переживает перезапуск ядра: после смены сети (Wi-Fi <-> LTE,
++// другой адаптер на ПК) он слал бы пакеты со старыми настройками сокета до таймаута простоя.
++func ResetClients() {
++	manger.mutex.Lock()
++	old := manger.m
++	manger.m = make(map[string]*client)
++	manger.mutex.Unlock()
++	for _, c := range old {
++		c.mutex.Lock()
++		if c.conn != nil {
++			c.close()
++		}
++		c.mutex.Unlock()
++	}
++}
++
+ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
+ 	tlsConfig := tls.ConfigFromStreamSettings(streamSettings)
+ 	if tlsConfig == nil {
+diff --git a/transport/internet/hysteria/udphop/conn.go b/transport/internet/hysteria/udphop/conn.go
+index 50dcc36..e8f24f2 100644
+--- a/transport/internet/hysteria/udphop/conn.go
++++ b/transport/internet/hysteria/udphop/conn.go
+@@ -13,7 +13,7 @@ import (
+ )
+ 
+ const (
+-	packetQueueSize = 1024
++	packetQueueSize = 8192
+ 	udpBufferSize   = finalmask.UDPSize
+ 
+ 	defaultHopInterval = 30 * time.Second
+@@ -75,22 +75,28 @@ func NewUDPHopPacketConn(addr *UDPHopAddr, index int, intervalMin int64, interva
+ 	// 	return nil, err
+ 	// }
+ 	hConn := &UdpHopPacketConn{
+-		Addr:           addr,
+-		Addrs:          addrs,
+-		HopIntervalMin: intervalMin,
+-		HopIntervalMax: intervalMax,
+-		ListenUDPFunc:  listenUDPFunc,
+-		prevConn:       nil,
+-		currentConn:    pktConn,
+-		addrIndex:      index,
+-		recvQueue:      make(chan *udpPacket, packetQueueSize),
+-		closeChan:      make(chan struct{}),
++		Addr:            addr,
++		Addrs:           addrs,
++		HopIntervalMin:  intervalMin,
++		HopIntervalMax:  intervalMax,
++		ListenUDPFunc:   listenUDPFunc,
++		prevConn:        nil,
++		currentConn:     pktConn,
++		addrIndex:       index,
++		readBufferSize:  8 * 1024 * 1024,
++		writeBufferSize: 8 * 1024 * 1024,
++		recvQueue:       make(chan *udpPacket, packetQueueSize),
++		closeChan:       make(chan struct{}),
+ 		bufPool: sync.Pool{
+ 			New: func() interface{} {
+ 				return make([]byte, udpBufferSize)
+ 			},
+ 		},
+ 	}
++	if pktConn != nil {
++		_ = trySetReadBuffer(pktConn, 8*1024*1024)
++		_ = trySetWriteBuffer(pktConn, 8*1024*1024)
++	}
+ 	go hConn.recvLoop(pktConn)
+ 	go hConn.hopLoop()
+ 	return hConn, nil

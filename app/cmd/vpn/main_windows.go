@@ -7,7 +7,9 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"vpnapp/cmd/vpn/wfp"
 	"vpnapp/core"
 	"vpnapp/ui"
 )
@@ -51,22 +54,29 @@ type App struct {
 	stoppedSvcs []string
 	tuned       map[string]bool
 	busy        bool
+	userExit    bool
 }
 
 func main() {
-	// один экземпляр: если уже запущен — показать его окно и выйти
-	if h := findExisting(); h != 0 {
-		// запущен другой файл (обычно старая версия после обновления) — закрываем его и стартуем сами;
-		// тот же файл — просто показываем уже открытое окно
-		if !replaceOther(h) {
-			postShow(h)
-			return
-		}
-	}
-
 	dataDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "VPN")
 	if dataDir == "VPN" {
 		dataDir = filepath.Join(os.TempDir(), "VPN")
+	}
+	bridged := false
+	// один экземпляр: если уже запущен — показать его окно и выйти
+	if h := findExisting(); h != 0 {
+		// VPN был включён: пока старая версия закрывается, а мы подключаемся, интернет мимо туннеля не идёт
+		// (наши фильтры WFP ставятся ДО закрытия старой и снимаются только заменой на фильтры нового туннеля)
+		if loadPersist(dataDir).WantOn {
+			bridged = bridgeKillSwitch()
+		}
+		// запущен другой файл (обычно старая версия после обновления) — закрываем его и стартуем сами;
+		// тот же файл — просто показываем уже открытое окно
+		if !replaceOther(h) {
+			wfp.DisableFirewall()
+			postShow(h)
+			return
+		}
 	}
 	os.MkdirAll(dataDir, 0o755)
 	logFile, _ = os.OpenFile(filepath.Join(dataDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -74,6 +84,9 @@ func main() {
 		logFile.Truncate(0)
 	}
 	logf("=== запуск VPN ===")
+	if bridged {
+		logf("killswitch: держу блокировку на время смены версии")
+	}
 
 	// wintun.dll рядом с ядром: распакуем в данные и загрузим по полному пути (Xray найдёт уже загруженную)
 	if err := extractAndLoadWintun(dataDir); err != nil {
@@ -81,6 +94,12 @@ func main() {
 	}
 
 	app = &App{dataDir: dataDir, persist: loadPersist(dataDir), tuned: map[string]bool{}, st: core.State{State: "off"}}
+	// прошлый запуск завершился во время игры (сбой/выключение) — вернуть Wi-Fi автонастройку
+	if app.persist.ScanOffIface != "" {
+		_ = setWlanScan(app.persist.ScanOffIface, true)
+		app.persist.ScanOffIface = ""
+		app.persist.save(dataDir)
+	}
 
 	showAtStart := !hasArg("--tray")
 	win, err := newWindow("VPN", showAtStart, app.onMsg)
@@ -111,10 +130,18 @@ func main() {
 	// автозапуск: если в прошлый раз были подключены — поднимаемся сами
 	if app.persist.WantOn && app.profile != nil {
 		go app.connect()
+	} else {
+		wfp.DisableFirewall()
 	}
 
 	win.run() // цикл сообщений до выхода
-	app.disconnect()
+	// «Выход» из трея — пользователь выключает VPN. Иначе (обновление закрыло старую версию, выключение
+	// или перезагрузка Windows) — только освобождаем систему: при следующем запуске VPN поднимется сам.
+	if app.userExit {
+		app.disconnect()
+	} else {
+		app.teardown()
+	}
 	logf("=== выход ===")
 }
 
@@ -281,6 +308,7 @@ func (a *App) onTray(cmd int) {
 			go a.connect()
 		}
 	case idExit:
+		a.userExit = true
 		a.win.quit()
 	}
 }
@@ -310,25 +338,38 @@ func (a *App) connect() {
 	defer func() { a.mu.Lock(); a.busy = false; a.mu.Unlock() }()
 
 	if p == nil {
+		wfp.DisableFirewall()
 		a.onState(core.State{State: "off", Detail: "Сначала добавьте подписку"})
 		return
 	}
 	a.persist.WantOn = true
 	a.persist.save(a.dataDir)
 	setAutostart(true)
+	t0 := time.Now()
+	logf("подключение: старт")
 	a.onState(core.State{State: "connecting", Detail: "Подбираю лучший путь"})
 
 	ctx := context.Background()
+	logf("подключение: гео-базы (+%v)", time.Since(t0).Round(time.Millisecond))
 	a.ensureAssets(p)
 	for _, n := range []string{"geoip.dat", "geosite.dat"} {
 		if _, err := os.Stat(filepath.Join(a.dataDir, n)); err != nil {
+			wfp.DisableFirewall()
 			a.onState(core.State{State: "off", Detail: "Нет базы " + n + " — включите интернет"})
 			return
 		}
 	}
 
+	logf("подключение: адаптер (+%v)", time.Since(t0).Round(time.Millisecond))
+	// адаптер может быть ещё недоступен (выход из сна, старая версия только что освободила сеть) — ждём
 	phys, err := defaultIface()
+	for i := 0; err != nil && i < 15; i++ {
+		time.Sleep(time.Second)
+		phys, err = defaultIface()
+	}
 	if err != nil {
+		logf("подключение: %v", err)
+		wfp.DisableFirewall()
 		a.onState(core.State{State: "off", Detail: "Нет подключения к интернету"})
 		return
 	}
@@ -337,17 +378,37 @@ func (a *App) connect() {
 	a.mu.Unlock()
 	bindDialer(phys.Index)
 
+	// свежая подписка (маршруты, сервисы, сервер) — коротко; не ответила — работаем на сохранённой
+	if p.SubURL != "" {
+		fctx, fcancel := context.WithTimeout(ctx, 6*time.Second)
+		if np, err := core.FetchProfile(fctx, p.SubURL, "windows"); err == nil {
+			if core.SaveProfile(a.dataDir, np) == nil {
+				p = np
+				a.mu.Lock()
+				a.profile, a.tariff = np, np.Tariff
+				a.mu.Unlock()
+				a.ensureAssets(p)
+			}
+		} else {
+			logf("подписка: %v", core.Detail(err))
+		}
+		fcancel()
+	}
+
 	// встроенный обход DPI (zapret) — качается/распаковывается из подписки
 	var bp core.Bypass
+	logf("подключение: zapret (+%v)", time.Since(t0).Round(time.Millisecond))
 	if z, err := prepareZapret(ctx, a.dataDir, p.Files["zapret-win.zip"], p.Server, logf); err == nil {
 		z.setIface(phys.Index)
 		a.zap = z
+
 		bp = z
 	} else {
 		logf("zapret недоступен: %v", err)
 	}
 
 	// конфликтующие службы обхода — на паузу
+	logf("подключение: службы (+%v)", time.Since(t0).Round(time.Millisecond))
 	a.stoppedSvcs = stopConflictingServices()
 
 	// Wi-Fi: настройки питания (разово) и игровой режим (отключение сканирования во время игр)
@@ -356,9 +417,10 @@ func (a *App) connect() {
 			a.tuned[phys.Name] = true
 			go tuneWiFi(phys.Name)
 		}
-		a.gm = startGameMode(phys.Name, logf, func(off bool, iface string) {})
+		a.gm = startGameMode(phys.Name, logf, a.onGameFlip)
 	}
 
+	logf("подключение: DNS (+%v)", time.Since(t0).Round(time.Millisecond))
 	setSmartDNS(true, a.persist)
 
 	bindName := goIfaceName(phys.Index)
@@ -372,19 +434,27 @@ func (a *App) connect() {
 			a.mu.Unlock()
 			return netKey(ph)
 		},
-		OnState:    a.onState,
-		AfterStart: func() error { return configureTun(a.currentPhys(), p.Server) },
+		OnState: a.onState,
+		AfterStart: func() error {
+			if err := configureTun(a.currentPhys(), p.Server); err != nil {
+				return err
+			}
+			enableKillSwitch()
+			return nil
+		},
 	})
 	a.mu.Lock()
 	a.engine = eng
 	a.mu.Unlock()
 
+	logf("подключение: ядро (+%v)", time.Since(t0).Round(time.Millisecond))
 	if err := eng.Start(p); err != nil {
 		logf("ошибка старта ядра: %v", err)
 		a.onState(core.State{State: "off", Detail: "Не удалось запустить VPN"})
 		a.teardown()
 		return
 	}
+	logf("подключение: готово (+%v)", time.Since(t0).Round(time.Millisecond))
 	a.watcher = watchNetwork(a.onNetChange)
 }
 
@@ -434,12 +504,64 @@ func (a *App) onNetChange() {
 		a.gm.Stop()
 		a.gm = nil
 		if phys.WiFi {
-			a.gm = startGameMode(phys.Name, logf, func(off bool, iface string) {})
+			a.gm = startGameMode(phys.Name, logf, a.onGameFlip)
 		}
 	}
 	if err := eng.Restart(goIfaceName(phys.Index)); err != nil {
 		logf("restart: %v", err)
 	}
+}
+
+// enableKillSwitch — защита от утечек на WFP (динамическая сессия): весь трафик — только через туннель,
+// кроме самого приложения (ядро: прямые российские сайты, обход DPI, соединение с сервером), локальной сети
+// и DHCP. DNS — только в туннель. Фильтры исчезают при выходе/падении приложения; при ручном отключении снимаются.
+// Заодно удаляет старые правила брандмауэра VPN_KillSwitch_*: они блокировали и прямые соединения самого
+// ядра (российские сайты и обход DPI не работали), а после выключения VPN оставляли ПК без интернета.
+func enableKillSwitch() {
+	// новые фильтры заменяют прежние без промежутка (перезапуск ядра: у туннеля мог смениться LUID)
+	luid, err := tunLUID()
+	if err != nil {
+		logf("killswitch: %v", err)
+		return
+	}
+	if err := wfp.EnableFirewall(uint64(luid), false, []netip.Addr{netip.MustParseAddr(core.TunDNS4)}); err != nil {
+		logf("killswitch: %v", err)
+		return
+	}
+	logf("killswitch: включён")
+	removeLegacyFirewallRules()
+}
+
+// bridgeKillSwitch — блокировка на время смены версии: разрешены только мы, ЛВС и текущий туннель старой версии.
+func bridgeKillSwitch() bool {
+	var luid uint64
+	if l, err := tunLUID(); err == nil {
+		luid = uint64(l)
+	}
+	return wfp.EnableFirewall(luid, false, []netip.Addr{netip.MustParseAddr(core.TunDNS4)}) == nil
+}
+
+var legacyRules = []string{"VPN_KillSwitch_Block_Physical_IPv4", "VPN_KillSwitch_Block_Wireless_IPv6",
+	"VPN_KillSwitch_Block_Wired_IPv6", "VPN_KillSwitch_Block_Physical_DNS_UDP", "VPN_KillSwitch_Block_Physical_DNS_TCP"}
+
+func removeLegacyFirewallRules() {
+	for _, n := range legacyRules {
+		cmd := exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name="+n)
+		cmd.SysProcAttr = hiddenProc()
+		if cmd.Run() == nil {
+			logf("брандмауэр: удалено старое правило %s", n)
+		}
+	}
+}
+
+// onGameFlip запоминает, что автонастройка Wi-Fi выключена нами (вернуть её после сбоя).
+func (a *App) onGameFlip(off bool, iface string) {
+	if off {
+		a.persist.ScanOffIface = iface
+	} else {
+		a.persist.ScanOffIface = ""
+	}
+	a.persist.save(a.dataDir)
 }
 
 func ifaceName(p *physIface) string {
@@ -490,6 +612,7 @@ func (a *App) teardown() {
 		zap.Stop()
 	}
 	startServices(svcs)
+	wfp.DisableFirewall() // ручное отключение — обычный интернет без VPN
 	cleanupTun(phys, srv)
 	setSmartDNS(false, a.persist)
 	core.DirectDialer.Control = nil

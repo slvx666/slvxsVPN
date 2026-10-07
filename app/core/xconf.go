@@ -4,6 +4,16 @@ import (
 	"strings"
 )
 
+func pemLines(pem string) []string {
+	var out []string
+	for _, l := range strings.Split(pem, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 // Адреса внутри туннеля (одинаковые для ПК и Android).
 const (
 	TunAddr4 = "172.19.0.1"
@@ -43,14 +53,14 @@ func (e *Engine) buildConfig() obj {
 
 	hy2mask := obj{"udp": []obj{{"type": "salamander", "settings": obj{"password": p.Hy2.Obfs}}}}
 	qp := obj{
-		"congestion":                  "bbr",
-		"maxIdleTimeout":              20,
-		"keepAlivePeriod":             8,
-		"initStreamReceiveWindow":     8388608,
-		"maxStreamReceiveWindow":      16777216,
-		"initConnReceiveWindow":       16777216,
-		"maxConnReceiveWindow":        33554432,
-		"disablePathMTUDiscovery":     true,
+		"congestion":              "bbr",
+		"maxIdleTimeout":          20,
+		"keepAlivePeriod":         8,
+		"initStreamReceiveWindow": 8388608,
+		"maxStreamReceiveWindow":  16777216,
+		"initConnReceiveWindow":   16777216,
+		"maxConnReceiveWindow":    33554432,
+		"disablePathMTUDiscovery": true,
 	}
 	if p.Hy2.Hop != "" {
 		// прыжки портов: провайдер не видит один «вечный» UDP-поток; клиент Xray прыгает без потерь
@@ -61,16 +71,14 @@ func (e *Engine) buildConfig() obj {
 	if hy2sni == "" {
 		hy2sni = p.Server
 	}
-	hy2tls := obj{"serverName": hy2sni, "alpn": []string{"h3"}}
-	pin := p.Hy2.PinSHA256
-	if pin == "" {
-		pin = "865de47fb55fddb470e917d6cee77b38417194e16e1c03b94d7649469324519b"
-	}
-	hy2tls["pinnedPeerCertSha256"] = pin
+	// Сертификат Hysteria2 — Let's Encrypt на IP сервера, живёт 6 дней. Отпечаток (pin) устаревал бы
+	// с каждым продлением, поэтому проверяем цепочку по корням ISRG (встроены) и IP/имени сервера.
+	hy2tls := obj{"serverName": hy2sni, "alpn": []string{"h3"},
+		"certificates": []obj{{"usage": "verify", "certificate": pemLines(isrgRoots)}}}
 
 	outbounds := []obj{
 		{"tag": tagVLESS, "protocol": "vless",
-			"settings": obj{"vnext": []obj{{"address": p.Server, "port": p.Port, "users": []obj{{"id": p.UUID, "encryption": "none", "flow": "xtls-rprx-vision"}}}}},
+			"settings":       obj{"vnext": []obj{{"address": p.Server, "port": p.Port, "users": []obj{{"id": p.UUID, "encryption": "none", "flow": "xtls-rprx-vision"}}}}},
 			"streamSettings": obj{"network": "tcp", "security": "reality", "realitySettings": reality, "sockopt": sockopt}},
 		{"tag": tagXHTTP, "protocol": "vless",
 			"settings": obj{"vnext": []obj{{"address": p.Server, "port": p.Port, "users": []obj{{"id": p.UUID, "encryption": "none"}}}}},
@@ -162,15 +170,19 @@ func (e *Engine) buildConfig() obj {
 	if e.opt.AccessLog != "" {
 		logCfg["access"] = e.opt.AccessLog
 	}
+	inbounds := []obj{{
+		"tag": "tun", "protocol": "tun", "port": 0,
+		"settings": obj{"name": e.opt.TunName, "MTU": TunMTU, "userLevel": 0},
+		"sniffing": obj{"enabled": true, "destOverride": []string{"fakedns", "http", "tls", "quic"},
+			// домен из SNI — только для маршрутизации; сервер сам ещё раз определит домен и выберет ближний CDN
+			"routeOnly": true, "domainsExcluded": []string{"courier.push.apple.com"}},
+	}}
+	if e.opt.NoTUN {
+		inbounds = []obj{}
+	}
 	return obj{
-		"log": logCfg,
-		"inbounds": []obj{{
-			"tag": "tun", "protocol": "tun", "port": 0,
-			"settings": obj{"name": e.opt.TunName, "MTU": TunMTU, "userLevel": 0},
-			"sniffing": obj{"enabled": true, "destOverride": []string{"fakedns", "http", "tls", "quic"},
-				// домен из SNI — только для маршрутизации; сервер сам ещё раз определит домен и выберет ближний CDN
-				"routeOnly": true, "domainsExcluded": []string{"courier.push.apple.com"}},
-		}},
+		"log":       logCfg,
+		"inbounds":  inbounds,
 		"outbounds": outbounds,
 		"routing":   obj{"domainStrategy": "AsIs", "rules": rules},
 		"dns":       dns,

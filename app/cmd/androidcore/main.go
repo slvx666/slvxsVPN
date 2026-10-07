@@ -219,8 +219,11 @@ func run(dataDir, libDir, sock string) {
 		emit(map[string]any{"state": "off", "error": "Не удалось запустить VPN"})
 		os.Exit(1)
 	}
+	// основное ядро — общее с ПК (Xray: выбор протокола, подбор обхода по сети, маршруты из подписки);
+	// sing-box — запасной, только если он есть в сборке и включён файлом «singbox» в данных приложения
 	singboxBin := filepath.Join(libDir, "libsingbox.so")
-	if _, err := os.Stat(singboxBin); err == nil {
+	_, sbFlag := os.Stat(filepath.Join(dataDir, "singbox"))
+	if _, err := os.Stat(singboxBin); err == nil && sbFlag == nil {
 		logf("starting sing-box core...")
 		runner, err := startSingbox(dataDir, libDir, tunFd, p, logf)
 		if err != nil {
@@ -253,6 +256,19 @@ func run(dataDir, libDir, sock string) {
 				}
 			}
 		}
+	}
+
+	// свежая подписка (маршруты, сервисы) — коротко, до старта; не ответила — работаем на сохранённой
+	if p.SubURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if np, err := core.FetchProfile(ctx, p.SubURL, "android"); err == nil {
+			if core.SaveProfile(dataDir, np) == nil {
+				p = np
+			}
+		} else {
+			logf("подписка: %v", core.Detail(err))
+		}
+		cancel()
 	}
 
 	var curFd = -1
@@ -320,11 +336,22 @@ func run(dataDir, libDir, sock string) {
 			}
 			if len(c) > 4 && c[:4] == "net " {
 				// Android: наш трафик и так вне туннеля (disallowApplication self), поэтому при смене сети
-				// НЕ пересоздаём ядро (это рвёт все соединения и мигает "Подключаюсь") — только перепроверяем
-				// протоколы и обход для новой сети.
+				// НЕ пересоздаём ядро (это рвёт все соединения и мигает "Подключаюсь"). Новая сеть (Wi-Fi <-> LTE):
+				// закрываем соединения Hysteria2 старой сети (иначе висели бы до таймаута) и перепроверяем
+				// протоколы и обход. Тот же handle (повтор события) — только перепроверка.
+				// «net <номер сети Android> <отпечаток сети>»
 				parts := strings.Fields(c[4:])
-				if len(parts) > 0 {
-					os.Setenv("VPN_NETKEY", parts[0])
+				if len(parts) > 1 {
+					os.Setenv("VPN_NETKEY", parts[1])
+				}
+				if len(parts) > 0 && parts[0] != os.Getenv("VPN_NETHANDLE") {
+					prev := os.Getenv("VPN_NETHANDLE")
+					os.Setenv("VPN_NETHANDLE", parts[0])
+					if prev != "" {
+						logf("сеть сменилась: %s -> %s (%s)", prev, parts[0], os.Getenv("VPN_NETKEY"))
+						e.NetworkChanged()
+						continue
+					}
 				}
 				e.Kick()
 			}

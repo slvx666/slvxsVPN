@@ -10,8 +10,10 @@
   обход DPI с автоподбором стратегии и запоминанием по сети), `switch.go` (переключатели выходов без обрыва).
 - `app/bdpi` — ByeDPI (Android): список стратегий и запуск процесса `libbyedpi.so`.
 - `app/ui/index.html` — один интерфейс (WebView) для обеих платформ.
-- `app/cmd/androidcore` — ядро Android (отдельный процесс, получает TUN fd от Java); `app/cmd/vpn` — Windows
-  (WebView2, wintun, zapret/winws, трей).
+- `app/cmd/androidcore` — ядро Android (отдельный процесс, получает TUN fd от Java; то же ядро Xray, что на ПК;
+  sing-box — только запасной: сборка с `SINGBOX=1` + файл `singbox` в данных); `app/cmd/vpn` — Windows
+  (WebView2, wintun, zapret/winws, трей, защита от утечек WFP в `cmd/vpn/wfp` — пакет из wireguard-windows).
+- `app/cmd/probe` — стенд на ПК без прав администратора: ядро без TUN, те же проверки (`go run ./cmd/probe`).
 - `android/` — Java: MainActivity (WebView+мост), VpnServiceImpl, Core, Bus, Prefs.
 - `server/subserver.py` — подписка: по UA `VPNApp/` отдаёт JSON-профиль; `APP_SERVICES` — какие сервисы
   через обход, их пробы. Меняется без переустановки приложений (`tools/push.sh server`).
@@ -38,3 +40,15 @@
 - В `ui/index.html` не называть функции/переменные именами свойств window (`top`, `name`, `status`…).
 - WebView2 на Windows: контроллер создаётся при скрытом окне → `PutIsVisible(true)` в `show()` (иначе чёрный экран).
 - Xray 26.3: `policy.system statsInbound` не включать; у Hysteria-инбаунда пользователи в `clients`.
+- Защита от утечек на ПК — WFP (динамическая сессия, `wfp.EnableFirewall` заменяет фильтры без «дыры»). Пакеты, которые
+  winws (WinDivert) возвращает в сеть, Windows проверяет от имени **«System»** — без разрешения System весь прямой
+  трафик с включённым zapret умирал (замер 2026-10-07). Правила брандмауэра `VPN_KillSwitch_*` (старые, ломали прямой
+  трафик) приложение удаляет само. Маршрута к серверу мимо туннеля больше нет (ssh к серверу идёт через ядро).
+- Сертификат Hysteria2 — Let's Encrypt на IP, живёт 6 дней: в клиентах проверка по корням ISRG, **не** pin.
+- Клиент Hysteria2 в Xray — глобальная таблица, переживает перезапуск ядра: при смене сети `hysteria.ResetClients()`
+  (наш патч), иначе висит до таймаута.
+- Android: колбэк сети видит и наш VPN — реальную сеть брать через `physical()`, ключ сети — шлюз/DNS или оператор.
+- Пробы обхода: ответ дольше 4,5 с = провал (ByeDPI `--auto=torst` срабатывает только после 5-секундного таймаута).
+- Локальная копия `xray-src` должна совпадать с серверной (патчи в `patches/`, `tools/push.sh` копирует файлы).
+- Тестировать с ПК при включённом VPN: сторонние программы мимо туннеля не выпускаются (WFP) — это не поломка.
+- YouTube отдаёт поток yt-dlp/curl ~3 Мбит/с, если не решена JS-проверка n — это не замедление провайдера.

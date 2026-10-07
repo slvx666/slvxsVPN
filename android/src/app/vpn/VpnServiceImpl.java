@@ -58,6 +58,9 @@ public class VpnServiceImpl extends VpnService {
                     .addDnsServer(TUN_DNS4)
                     .addDnsServer("77.88.8.8")
                     .addRoute("0.0.0.0", 0)
+                    // IPv6 тоже в туннель: иначе на мобильном интернете с IPv6 часть трафика шла бы мимо VPN
+                    .addAddress(TUN_ADDR6, 126)
+                    .addRoute("::", 0)
                     .setConfigureIntent(PendingIntent.getActivity(this, 0,
                             new Intent(this, MainActivity.class),
                             PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0)));
@@ -70,7 +73,7 @@ public class VpnServiceImpl extends VpnService {
                 try {
                     ConnectivityManager cm = getSystemService(ConnectivityManager.class);
                     if (cm != null) {
-                        Network act = cm.getActiveNetwork();
+                        Network act = physical(cm);
                         if (act != null) setUnderlyingNetworks(new Network[]{act});
                     }
                 } catch (Exception ignore) {}
@@ -85,6 +88,16 @@ public class VpnServiceImpl extends VpnService {
             // папка для диагностики (Android/data/app.vpn/files): ядро копирует туда логи, читается по adb без root
             java.io.File diag = getExternalFilesDir(null);
             if (diag != null) pb.environment().put("VPN_DIAG_DIR", diag.getAbsolutePath());
+            // текущая сеть: ядро сразу берёт удачный для неё вариант обхода
+            try {
+                ConnectivityManager cm0 = getSystemService(ConnectivityManager.class);
+                Network act = physical(cm0);
+                if (act != null) {
+                    pb.environment().put("VPN_NETKEY", netKey(cm0, act));
+                    pb.environment().put("VPN_NETHANDLE", String.valueOf(act.getNetworkHandle()));
+                    netHandle = act.getNetworkHandle();
+                }
+            } catch (Exception ignore) {}
             core = pb.start();
             coreIn = core.getOutputStream();
             captureErr();
@@ -174,41 +187,73 @@ public class VpnServiceImpl extends VpnService {
         catch (Exception ignore) {}
     }
 
+    /** Реальная сеть (не наш VPN): Wi-Fi/кабель предпочтительнее мобильной — как выбирает и сама система. */
+    static Network physical(ConnectivityManager cm) {
+        Network best = null;
+        if (cm == null) return null;
+        for (Network n : cm.getAllNetworks()) {
+            NetworkCapabilities c = cm.getNetworkCapabilities(n);
+            if (c == null || c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    || !c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue;
+            if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return n;
+            if (best == null) best = n;
+        }
+        return best;
+    }
+
+    private long netHandle = -1;
+
+    /** Сменилась реальная сеть: сообщить системе (нижележащая сеть VPN) и ядру. Свой VPN не считается. */
+    private synchronized void netChanged() {
+        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+        Network p = physical(cm);
+        if (Build.VERSION.SDK_INT >= 22) {
+            try { setUnderlyingNetworks(p != null ? new Network[]{p} : null); } catch (Exception ignore) {}
+        }
+        long h = p == null ? 0 : p.getNetworkHandle();
+        if (h == netHandle) return;
+        netHandle = h;
+        if (p != null) toCore("net " + h + " " + netKey(cm, p));
+    }
+
     private void registerNetCallback() {
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         if (cm == null) return;
         netCb = new ConnectivityManager.NetworkCallback() {
-            private long lastKey = -1, lastAt = 0;
-            @Override public void onAvailable(Network n) {
-                if (Build.VERSION.SDK_INT >= 22 && n != null) {
-                    try { setUnderlyingNetworks(new Network[]{n}); } catch (Exception ignore) {}
-                }
-                changed(n);
-            }
-            @Override public void onCapabilitiesChanged(Network n, NetworkCapabilities caps) {
-                if (Build.VERSION.SDK_INT >= 22 && n != null) {
-                    try { setUnderlyingNetworks(new Network[]{n}); } catch (Exception ignore) {}
-                }
-            }
-            @Override public void onLost(Network n) {
-                if (Build.VERSION.SDK_INT >= 22) {
-                    try {
-                        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
-                        Network act = cm != null ? cm.getActiveNetwork() : null;
-                        setUnderlyingNetworks(act != null ? new Network[]{act} : null);
-                    } catch (Exception ignore) {}
-                }
-                changed(n);
-            }
-            private void changed(Network n) {
-                long k = n == null ? 0 : n.getNetworkHandle();
-                long now = System.currentTimeMillis();
-                if (k == lastKey && now - lastAt < 3000) return;
-                lastKey = k; lastAt = now;
-                toCore("net " + k);
-            }
+            @Override public void onAvailable(Network n) { netChanged(); }
+            @Override public void onCapabilitiesChanged(Network n, NetworkCapabilities caps) { netChanged(); }
+            @Override public void onLost(Network n) { netChanged(); }
         };
-        try { cm.registerDefaultNetworkCallback(netCb); } catch (Exception ignore) {}
+        try {
+            cm.registerNetworkCallback(new android.net.NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), netCb);
+        } catch (Exception ignore) {}
+    }
+
+    /** Устойчивый «отпечаток» сети (номер сети Android меняется при каждом переподключении):
+     *  Wi-Fi/кабель — шлюз и DNS, мобильная — оператор. Для запоминания удачного обхода DPI. */
+    String netKey(ConnectivityManager cm, Network n) {
+        StringBuilder b = new StringBuilder();
+        try {
+            android.net.NetworkCapabilities c = cm.getNetworkCapabilities(n);
+            if (c != null && c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                b.append("cell:");
+                try {
+                    android.telephony.TelephonyManager tm = (android.telephony.TelephonyManager)
+                            getSystemService(TELEPHONY_SERVICE);
+                    if (tm != null) b.append(tm.getNetworkOperator()).append(':').append(tm.getNetworkOperatorName());
+                } catch (Exception ignore) {}
+            } else {
+                b.append(c != null && c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ? "wifi:" : "net:");
+                android.net.LinkProperties lp = cm.getLinkProperties(n);
+                if (lp != null) {
+                    for (android.net.RouteInfo r : lp.getRoutes())
+                        if (r.isDefaultRoute() && r.getGateway() != null) b.append(r.getGateway().getHostAddress()).append(',');
+                    for (java.net.InetAddress d : lp.getDnsServers()) b.append(d.getHostAddress()).append(',');
+                }
+            }
+        } catch (Exception ignore) {}
+        return Integer.toHexString(b.toString().hashCode()) + "-" + b.toString().replaceAll("[^A-Za-z0-9.:,-]", "").replaceAll("^(.{0,40}).*", "$1");
     }
 
     private void fail(String msg) {

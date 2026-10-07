@@ -8,7 +8,9 @@ cd /root/build/app
 GOOS=android GOARCH=arm64 CGO_ENABLED=0 nice go build -trimpath -ldflags "-s -w -buildid=" -o /root/build/libvpncore.so ./cmd/androidcore
 cd /root/build/android
 cp /root/build/libvpncore.so lib/arm64-v8a/
-[ -f /root/build/sing-box-arm64 ] && cp /root/build/sing-box-arm64 lib/arm64-v8a/libsingbox.so
+# sing-box — только по запросу (SINGBOX=1): основное ядро Android — общее с ПК (Xray)
+rm -f lib/arm64-v8a/libsingbox.so
+[ "$SINGBOX" = 1 ] && [ -f /root/build/sing-box-arm64 ] && cp /root/build/sing-box-arm64 lib/arm64-v8a/libsingbox.so
 cp /root/build/app/ui/index.html assets/index.html
 sed -i "s/<application android:debuggable=\"true\"/<application/" AndroidManifest.xml
 [ "$DEBUG" = 1 ] && sed -i "s/<application/<application android:debuggable=\"true\"/" AndroidManifest.xml

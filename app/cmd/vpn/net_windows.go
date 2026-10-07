@@ -172,13 +172,10 @@ func configureTun(phys *physIface, server string) error {
 	if err := luid.SetDNS(windows.AF_INET, []netip.Addr{netip.MustParseAddr(core.TunDNS4)}, nil); err != nil {
 		return fmt.Errorf("DNS туннеля: %w", err)
 	}
-	// сервер — всегда мимо туннеля (исходящие Xray и так привязаны к адаптеру; это страховка для UDP)
-	if phys != nil && phys.Gateway.IsValid() && !phys.Gateway.IsUnspecified() {
-		if a, err := netip.ParseAddr(server); err == nil {
-			_ = phys.LUID.DeleteRoute(netip.PrefixFrom(a, 32), phys.Gateway)
-			_ = phys.LUID.AddRoute(netip.PrefixFrom(a, 32), phys.Gateway, 0)
-		}
-	}
+	// Отдельного маршрута к серверу мимо туннеля нет: соединения ядра и так привязаны к адаптеру, а чужие
+	// программы (ssh и т.п.) к IP сервера идут в туннель и выходят через ядро напрямую (правило «сервер — direct»).
+	// Маршрут мимо туннеля защита WFP всё равно заблокировала бы для них. Старый маршрут (прежние версии) — убрать.
+	removeServerRoute(phys, server)
 	flushDNS()
 	return nil
 }

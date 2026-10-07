@@ -84,7 +84,9 @@ func prepareZapret(ctx context.Context, dataDir string, ref core.FileRef, server
 	lists := filepath.Join(root, "lists")
 	for name, content := range map[string]string{
 		"ipset-exclude-user.txt": "203.0.113.113/32\r\n" + server + "/32\r\n",
-		"list-general-user.txt":  "# Never leave this file empty\r\ndomain.example.abc\r\n",
+		// Twitch (страница, видео, чат) — напрямую через обход, без рекламы VPN-региона
+		"list-general-user.txt": "twitch.tv\r\nttvnw.net\r\njtvnw.net\r\ntwitchcdn.net\r\ntwitchsvc.net\r\n" +
+			"ext-twitch.tv\r\nlive-video.net\r\n",
 		"list-exclude-user.txt":  "domain.example.abc\r\n",
 	} {
 		_ = os.WriteFile(filepath.Join(lists, name), []byte(content), 0o644)
@@ -234,9 +236,10 @@ func splitArgs(s string) []string {
 	return args
 }
 
-// cleanZapretArgs удаляет правила обхода Discord из Flowseal general*.bat.
-// Discord в РФ заблокирован по IP (обход DPI его не открывает), поэтому он полностью идёт через VPN.
-// Если winws перехватывает порты Discord (50000-50100) и подмешивает fake-пакеты, это ломает WebRTC и голос.
+// cleanZapretArgs убирает из Flowseal general*.bat обход ГОЛОСА Discord (UDP 19294-19344/50000-50100, discord/stun):
+// голос и прочий UDP идут через VPN (голосовые серверы Discord в РФ заблокированы по IP), а подмешанные winws
+// fake-пакеты ломали бы WebRTC. TCP-часть Discord (сайт, API, CDN) остаётся — её обход проверяет и выбирает движок.
+// В каждый профиль добавляется исключение сервера VPN.
 func cleanZapretArgs(args []string, server string) []string {
 	var blocks [][]string
 	var curBlock []string
@@ -254,39 +257,24 @@ func cleanZapretArgs(args []string, server string) []string {
 		blocks = append(blocks, curBlock)
 	}
 
-	for i := range blocks {
-		for j, a := range blocks[i] {
-			if strings.HasPrefix(a, "--wf-udp=") {
-				blocks[i][j] = "--wf-udp=443"
-			} else if strings.HasPrefix(a, "--wf-tcp=") {
-				cleaned := a
-				for _, p := range []string{"2053,", "2083,", "2087,", "2096,"} {
-					cleaned = strings.ReplaceAll(cleaned, p, "")
-				}
-				blocks[i][j] = cleaned
-			}
-		}
-	}
-
-	var keptBlocks [][]string
-	for _, blk := range blocks {
-		isDiscord := false
-		for _, a := range blk {
-			low := strings.ToLower(a)
-			if strings.Contains(low, "discord") || strings.Contains(low, "stun") ||
-				strings.Contains(low, "50000-50100") || strings.Contains(low, "19294-19344") {
-				isDiscord = true
-				break
-			}
-		}
-		if !isDiscord {
-			keptBlocks = append(keptBlocks, blk)
-		}
-	}
-
 	var out []string
-	for i, blk := range keptBlocks {
-		if i > 0 {
+	for _, blk := range blocks {
+		voice := false
+		for j, a := range blk {
+			low := strings.ToLower(a)
+			switch {
+			case strings.HasPrefix(low, "--filter-l7=") && (strings.Contains(low, "discord") || strings.Contains(low, "stun")):
+				voice = true
+			case strings.HasPrefix(low, "--filter-udp=") && (strings.Contains(low, "19294") || strings.Contains(low, "50000")):
+				voice = true
+			case strings.HasPrefix(low, "--wf-udp="):
+				blk[j] = "--wf-udp=443"
+			}
+		}
+		if voice {
+			continue
+		}
+		if len(out) > 0 {
 			out = append(out, "--new")
 		}
 		out = append(out, blk...)

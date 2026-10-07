@@ -14,6 +14,9 @@ push_app() {
 	scp -q "$ROOT/xray-src/transport/internet/hysteria/dialer.go" "$SERVER:/root/build/xray-src/transport/internet/hysteria/dialer.go"
 	scp -q "$ROOT/xray-src/transport/internet/hysteria/udphop/conn.go" "$SERVER:/root/build/xray-src/transport/internet/hysteria/udphop/conn.go"
 	scp -q "$ROOT/xray-src/proxy/tun/udp_fullcone.go" "$SERVER:/root/build/xray-src/proxy/tun/udp_fullcone.go"
+	scp -q "$ROOT/xray-src/app/proxyman/inbound/always.go" "$SERVER:/root/build/xray-src/app/proxyman/inbound/always.go"
+	scp -q "$ROOT/xray-src/app/dns/fakedns/fake.go" "$SERVER:/root/build/xray-src/app/dns/fakedns/fake.go"
+	scp -q "$ROOT/xray-src/proxy/tun/handler.go" "$SERVER:/root/build/xray-src/proxy/tun/handler.go"
 }
 push_android() {
 	echo "→ android"
