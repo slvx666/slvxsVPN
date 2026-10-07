@@ -443,7 +443,7 @@ func (e *Engine) transportLoop(ctx context.Context) {
 			wg.Add(2)
 			go func(t string) {
 				defer wg.Done()
-				_, err := e.probeHTTP(ctx, t, "https://www.gstatic.com/generate_204", 0, 5*time.Second)
+				_, err := e.probeHTTP(ctx, t, "https://www.gstatic.com/generate_204", 0, 8*time.Second)
 				mu.Lock()
 				tcpOK[t] = err == nil
 				mu.Unlock()
@@ -461,7 +461,7 @@ func (e *Engine) transportLoop(ctx context.Context) {
 				if indexOf(udpOrder, t) < 0 {
 					return // UDP поверх XHTTP (TCP) для игр и голоса не годится — не проверяем и не выбираем
 				}
-				err := e.probeUDP(ctx, t, 4*time.Second)
+				err := e.probeUDP(ctx, t, 6*time.Second)
 				mu.Lock()
 				udpOK[t] = err == nil
 				mu.Unlock()
@@ -572,6 +572,9 @@ func (s *streak) rate() (float64, int) {
 //   - иначе — первый по приоритету с ≥80%, а если таких нет — с лучшей долей.
 func choose(order []string, st map[string]*streak, cur string) string {
 	good := func(s *streak) bool { r, n := s.rate(); return n > 0 && r >= 0.8 && s.fail < 2 }
+	// текущий держим, пока он не заметно хуже другого: на плохой сети (LTE, 10% потерь) проходят все
+	// протоколы через раз, и прежнее «две неудачи подряд — меняем» гоняло трафик туда-сюда
+	rateOf := func(s *streak) float64 { r, _ := s.rate(); return r }
 	strong := func(s *streak) bool { r, n := s.rate(); return n >= 5 && r >= 0.95 && s.fail == 0 }
 	if c := st[cur]; c != nil && indexOf(order, cur) >= 0 {
 		_, curN := c.rate()
@@ -587,6 +590,18 @@ func choose(order []string, st map[string]*streak, cur string) string {
 		}
 		if good(c) {
 			return cur
+		}
+		if _, n := c.rate(); n >= 3 {
+			cr := rateOf(c)
+			stay := true
+			for _, t := range order {
+				if t != cur && rateOf(st[t]) >= cr+0.3 {
+					stay = false
+				}
+			}
+			if stay && cr >= 0.3 {
+				return cur
+			}
 		}
 	}
 	for _, t := range order {

@@ -62,3 +62,28 @@ func TestChooseStartupPriority(t *testing.T) {
 		t.Fatalf("short history: want hy2, got %s", got)
 	}
 }
+
+// плохая сеть: все протоколы проходят через раз — не метаться, держаться за Hysteria2
+func TestChooseLossyStays(t *testing.T) {
+	order := []string{tagHy2, tagVLESS, tagXHTTP}
+	p := map[string]float64{tagHy2: 0.7, tagVLESS: 0.3, tagXHTTP: 0.3}
+	st := map[string]*streak{}
+	for _, k := range order {
+		st[k] = &streak{}
+	}
+	r := rand.New(rand.NewSource(7))
+	cur, switches := tagHy2, 0
+	for i := 0; i < 300; i++ {
+		for _, k := range order {
+			upd(st[k], r.Float64() < p[k])
+		}
+		if b := choose(order, st, cur); b != "" && b != cur {
+			switches++
+			cur = b
+		}
+	}
+	t.Logf("switches=%d", switches)
+	if switches > 12 {
+		t.Fatalf("too many switches on lossy net: %d", switches)
+	}
+}
