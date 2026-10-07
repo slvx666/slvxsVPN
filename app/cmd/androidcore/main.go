@@ -209,6 +209,14 @@ var (
 	troublePath string
 )
 
+// troubleZone — часовой пояс телефона: у Go-процесса на Android нет tzdata, служба передаёт смещение в секундах.
+func troubleZone() *time.Location {
+	if v, err := strconv.Atoi(os.Getenv("VPN_TZ_OFFSET")); err == nil {
+		return time.FixedZone("tz", v)
+	}
+	return time.UTC
+}
+
 func tlog(format string, a ...any) {
 	if troublePath == "" {
 		return
@@ -224,7 +232,7 @@ func tlog(format string, a ...any) {
 		return
 	}
 	defer f.Close()
-	fmt.Fprintf(f, "%s [ядро] %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, a...))
+	fmt.Fprintf(f, "%s [ядро] %s\n", time.Now().In(troubleZone()).Format("2006-01-02 15:04:05"), fmt.Sprintf(format, a...))
 }
 
 func run(dataDir, libDir, sock string) {

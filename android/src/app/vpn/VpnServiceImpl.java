@@ -89,6 +89,7 @@ public class VpnServiceImpl extends VpnService {
             // папка для диагностики (Android/data/app.vpn/files): ядро копирует туда логи, читается по adb без root
             java.io.File diag = getExternalFilesDir(null);
             if (diag != null) pb.environment().put("VPN_DIAG_DIR", diag.getAbsolutePath());
+            pb.environment().put("VPN_TZ_OFFSET", String.valueOf(java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000));
             // текущая сеть: ядро сразу берёт удачный для неё вариант обхода
             try {
                 ConnectivityManager cm0 = getSystemService(ConnectivityManager.class);
