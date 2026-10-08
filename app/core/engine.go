@@ -168,6 +168,7 @@ func (e *Engine) Start(p *Profile) error {
 		e.Stop()
 		return err
 	}
+	go e.watchLoop(e.ctx)
 	go e.transportLoop(e.ctx)
 	go e.serviceLoop(e.ctx)
 	go e.pingLoop(e.ctx)
@@ -545,6 +546,73 @@ func (e *Engine) transportLoop(ctx context.Context) {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// watchLoop — сквозные проверки реальных сервисов через текущий выход VPN (Telegram, Google) раз в минуту.
+// Пишется в журнал, если что-то не открылось или ответило медленнее 2 с, и «пульс» раз в 10 минут. Нужно, чтобы
+// потом по журналу видеть, КОГДА и ЧТО именно «не грузило» (состояние туннеля само по себе этого не показывает).
+func (e *Engine) watchLoop(ctx context.Context) {
+	if e.opt.Event == nil {
+		return
+	}
+	type target struct{ name, url string }
+	list := []target{{"telegram", "https://web.telegram.org/"}, {"telegram-api", "https://api.telegram.org/"}, {"google", "https://www.google.com/generate_204"}}
+	for i := 0; ; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(60 * time.Second):
+		}
+		tag := e.target(swTCP)
+		if tag == "" {
+			continue
+		}
+		res := make([]string, len(list))
+		bad := false
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for k, t := range list {
+			wg.Add(1)
+			go func(k int, t target) {
+				defer wg.Done()
+				d, err := e.probeHTTP(ctx, tag, t.url, 0, 10*time.Second)
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case err != nil:
+					res[k] = t.name + "=СБОЙ(" + shortErr(err) + ")"
+					bad = true
+				case d > 2*time.Second:
+					res[k] = fmt.Sprintf("%s=%dмс(МЕДЛЕННО)", t.name, d.Milliseconds())
+					bad = true
+				default:
+					res[k] = fmt.Sprintf("%s=%dмс", t.name, d.Milliseconds())
+				}
+			}(k, t)
+		}
+		wg.Wait()
+		if bad || i%10 == 0 {
+			e.opt.Event("сквозная проверка через " + tag + ": " + strings.Join(res, " "))
+		}
+	}
+}
+
+func shortErr(err error) string {
+	m := err.Error()
+	switch {
+	case strings.Contains(m, "deadline exceeded"), strings.Contains(m, "timeout"):
+		return "таймаут"
+	case strings.Contains(m, "reset"):
+		return "reset"
+	case strings.Contains(m, "EOF"):
+		return "EOF"
+	case strings.Contains(m, "closed pipe"):
+		return "закрыто"
+	}
+	if len(m) > 40 {
+		m = m[len(m)-40:]
+	}
+	return m
 }
 
 // roundEvent — строка в журнал проблем: каждый круг, где что-то не прошло или было медленно (>1.5 с),

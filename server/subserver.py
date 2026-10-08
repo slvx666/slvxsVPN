@@ -51,19 +51,45 @@ def cert_pin():
         return "865de47fb55fddb470e917d6cee77b38417194e16e1c03b94d7649469324519b"
 
 
+# Windows: серверы EA/Respawn (Apex и др.) — напрямую (настоящий IP от 77.88.8.8, без FakeDNS и туннеля)
+APP_EA_DIRECT = [
+    "domain:ea.com",
+    "domain:tnt-ea.com",
+    "domain:respawn.com",
+    "domain:origin.com",
+    "domain:eaanticheat.com",
+    "domain:ea.pl",
+    "domain:apexlegends.com",
+    "domain:eacdn.com",
+    "domain:eashooters.com",
+    "domain:electronicarts.com",
+    "domain:steamserver.net",
+    "domain:steampowered.com",
+    "domain:steamcommunity.com",
+    "domain:steamgames.com",
+    "domain:valve.net",
+    "domain:valvesoftware.com",
+    "domain:amazonaws.com",
+    "domain:amazon.com",
+]
+
+
 def app_profile(cfg, u, base, ua=""):
     try:
         man = json.load(open(f"{APP}/manifest.json"))
     except Exception:
         man = {}
     files = {n: {"version": v["version"], "sha256": v["sha256"], "url": f"{base}/file/{n}"} for n, v in man.items()}
+    direct = list(APP_DIRECT)
+    if "(windows)" in ua:
+        direct.extend(APP_EA_DIRECT)
     return {
         "v": 1, "name": u["name"], "tariff": "безлимит" if not u["mark"] else f"{u['limit_mbit']} Мбит/с",
         "country": "Германия",
         "server": cfg["server"], "port": cfg["port"], "sni": cfg["sni"], "pbk": cfg["publicKey"],
         "sid": u["shortId"], "uuid": u["uuid"], "xhttp_path": cfg["xhttp_path"],
         "hy2": {"obfs": cfg["hy2_obfs"], "hop": hy2_hop(cfg, ua), "sni": cfg["server"], "pin_sha256": cert_pin()},
-        "direct_domains": APP_DIRECT, "blocked_domains": APP_BLOCKED, "services": services_for(ua),
+        "direct_domains": direct, "blocked_domains": APP_BLOCKED, "services": services_for(ua),
         "files": files,
     }
 
@@ -77,13 +103,6 @@ def hy2_hop(cfg, ua):
     return cfg["hy2_hop"]
 
 
-# Windows: серверы EA/Respawn (Apex и др.) — напрямую; если напрямую недоступны, приложение само уходит в VPN.
-# (Эксперимент 2026-10-08: через Германию Apex не заходил в лобби — «не удалось подключиться к серверам EA».)
-APP_EA_WINDOWS = {"id": "ea", "mode": "direct", "domains": ["domain:ea.com", "domain:respawn.com", "domain:origin.com",
-                  "domain:eaanticheat.com", "domain:ea.pl"],
-                  "probes": [{"url": "https://accounts.ea.com/", "min_bytes": 0}]}
-
-
 def services_for(ua):
     import copy
     svcs = copy.deepcopy(APP_SERVICES)
@@ -91,8 +110,6 @@ def services_for(ua):
         for s in svcs:
             if s["id"] in APP_QUIC_DIRECT_ANDROID:
                 s["quic"] = "direct"
-    if "(windows)" in ua and os.path.exists(f"{BASE}/ea-direct"):
-        svcs.append(copy.deepcopy(APP_EA_WINDOWS))
     return svcs
 
 
