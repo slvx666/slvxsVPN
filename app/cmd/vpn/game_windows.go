@@ -28,7 +28,14 @@ type gameMode struct {
 	onFlip func(off bool, iface string)
 }
 
+// gameModeEnabled — выключено: отключение автонастройки Wi-Fi (netsh wlan autoconfig=no) при сне/гибернации
+// оставляло ПК «без Wi-Fi» после пробуждения (сети не видны, не подключается). Выигрыш — лишь реже скачки пинга.
+const gameModeEnabled = false
+
 func startGameMode(iface string, logf func(string, ...any), onFlip func(bool, string)) *gameMode {
+	if !gameModeEnabled {
+		return nil
+	}
 	g := &gameMode{iface: iface, stop: make(chan struct{}), logf: logf, onFlip: onFlip}
 	go g.loop()
 	return g

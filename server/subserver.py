@@ -62,10 +62,19 @@ def app_profile(cfg, u, base, ua=""):
         "country": "Германия",
         "server": cfg["server"], "port": cfg["port"], "sni": cfg["sni"], "pbk": cfg["publicKey"],
         "sid": u["shortId"], "uuid": u["uuid"], "xhttp_path": cfg["xhttp_path"],
-        "hy2": {"obfs": cfg["hy2_obfs"], "hop": cfg["hy2_hop"], "sni": cfg["server"], "pin_sha256": cert_pin()},
+        "hy2": {"obfs": cfg["hy2_obfs"], "hop": hy2_hop(cfg, ua), "sni": cfg["server"], "pin_sha256": cert_pin()},
         "direct_domains": APP_DIRECT, "blocked_domains": APP_BLOCKED, "services": services_for(ua),
         "files": files,
     }
+
+
+def hy2_hop(cfg, ua):
+    """Прыжки портов Hysteria2 — только для ПК. На мобильном интернете (CGNAT МегаФона) прыжки ломают Hysteria2:
+    клиент каждые ~5 с начинает рукопожатие на новом порту, ответы не доходят (замер 2026-10-08, перехват на
+    сервере). Без прыжков (только 443/udp) на LTE стабильно. Телефон часто на LTE -> Android без прыжков."""
+    if "(android)" in ua:
+        return ""
+    return cfg["hy2_hop"]
 
 
 def services_for(ua):

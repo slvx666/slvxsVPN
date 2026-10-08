@@ -76,6 +76,7 @@ const (
 	wmRButtonUp = 0x0205
 	wmLButtonDblClk = 0x0203
 	wmActivate  = 0x0006
+	wmPowerBroadcast = 0x0218
 	nimAdd      = 0
 	nimModify   = 1
 	nimDelete   = 2
@@ -410,6 +411,12 @@ func wndProc(hwnd windows.Handle, msg uint32, wp, lp uintptr) uintptr {
 		}
 		w.quit()
 		return 0
+	case wmPowerBroadcast:
+		// PBT_APMRESUMESUSPEND (7) / PBT_APMRESUMEAUTOMATIC (0x12): ПК проснулся (сон/гибернация)
+		if (wp == 7 || wp == 0x12) && app != nil {
+			go app.onResume()
+		}
+		return 1
 	case wmDestroy:
 		pPostQuitMessage.Call(0)
 		return 0

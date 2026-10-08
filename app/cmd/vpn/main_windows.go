@@ -55,9 +55,21 @@ type App struct {
 	tuned       map[string]bool
 	busy        bool
 	userExit    bool
+	resuming    bool
 }
 
 func main() {
+	// режим сторожа: следит за основным процессом (см. watch_windows.go)
+	for i, a := range os.Args {
+		if a == "--watch" && i+1 < len(os.Args) {
+			n := 0
+			for _, c := range os.Args[i+1] {
+				n = n*10 + int(c-'0')
+			}
+			watchMode(uint32(n))
+			return
+		}
+	}
 	dataDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "VPN")
 	if dataDir == "VPN" {
 		dataDir = filepath.Join(os.TempDir(), "VPN")
@@ -78,12 +90,20 @@ func main() {
 			return
 		}
 	}
+	// VPN был включён (запуск при входе в Windows или после аварии): блокировка с первой миллисекунды,
+	// не дожидаясь подключения; её заменит защита, которую поставит подключение
+	if !bridged && loadPersist(dataDir).WantOn {
+		bridged = bridgeKillSwitch()
+	}
 	os.MkdirAll(dataDir, 0o755)
 	logFile, _ = os.OpenFile(filepath.Join(dataDir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if st, _ := logFile.Stat(); st != nil && st.Size() > 4<<20 {
 		logFile.Truncate(0)
 	}
 	logf("=== запуск VPN ===")
+	if !hasArg("--watched") { // перезапущенный сторожем уже под его наблюдением
+		spawnWatcher()
+	}
 	if bridged {
 		logf("killswitch: держу блокировку на время смены версии")
 	}
@@ -422,11 +442,34 @@ func (a *App) connect() {
 
 	logf("подключение: DNS (+%v)", time.Since(t0).Round(time.Millisecond))
 	setSmartDNS(true, a.persist)
+	if phys.WiFi {
+		go setWlanScan(phys.Name, true) // страховка: автонастройка Wi-Fi должна быть включена (раньше её выключал игровой режим)
+	}
 
 	bindName := goIfaceName(phys.Index)
+	// диагностика: файл «debug» в папке данных — журнал соединений Xray (access.log): кто куда и через какой выход
+	accessLog := ""
+	if _, err := os.Stat(filepath.Join(a.dataDir, "debug")); err == nil {
+		accessLog = filepath.Join(a.dataDir, "access.log")
+		if st, err := os.Stat(accessLog); err == nil && st.Size() > 16<<20 {
+			os.Remove(accessLog)
+		}
+		logf("диагностика: журнал соединений включён (access.log)")
+		// проверка выхода из сна без сна: файл «resume-test» в папке данных = имитация пробуждения
+		go func() {
+			for i := 0; i < 5 || a.Running(); i++ { // первые секунды ядро ещё не создано
+				if _, err := os.Stat(filepath.Join(a.dataDir, "resume-test")); err == nil {
+					os.Remove(filepath.Join(a.dataDir, "resume-test"))
+					logf("диагностика: имитация выхода из сна")
+					a.onResume()
+				}
+				time.Sleep(2 * time.Second)
+			}
+		}()
+	}
 	eng := core.NewEngine(core.Options{
 		DataDir: a.dataDir, AssetDir: a.dataDir, TunName: tunName, BindIface: bindName,
-		Platform: "windows", LogLevel: "warning", ErrorLog: filepath.Join(a.dataDir, "xray.log"),
+		Platform: "windows", LogLevel: "warning", ErrorLog: filepath.Join(a.dataDir, "xray.log"), AccessLog: accessLog,
 		Bypass: bp, Logf: logf,
 		NetKey: func() string {
 			a.mu.Lock()
@@ -456,6 +499,13 @@ func (a *App) connect() {
 	}
 	logf("подключение: готово (+%v)", time.Since(t0).Round(time.Millisecond))
 	a.watcher = watchNetwork(a.onNetChange)
+}
+
+// Running — ядро запущено (для фоновых диагностических циклов).
+func (a *App) Running() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.engine != nil && a.engine.Running()
 }
 
 func (a *App) currentPhys() *physIface {
@@ -489,7 +539,8 @@ func (a *App) onNetChange() {
 	}
 	if old != nil && phys.Index == old.Index && phys.Gateway == old.Gateway {
 		logf("сеть подтверждена (адаптер %s)", phys.Name)
-		eng.Kick()
+		// соединения Hysteria2 после обрыва связи мёртвые (QUIC молчит до таймаута простоя) — закрыть сразу
+		eng.NetworkChanged()
 		return
 	}
 	logf("сменился адаптер или шлюз: %s -> %s", ifaceName(old), phys.Name)
@@ -562,6 +613,51 @@ func (a *App) onGameFlip(off bool, iface string) {
 		a.persist.ScanOffIface = ""
 	}
 	a.persist.save(a.dataDir)
+}
+
+// onResume — ПК проснулся (сон/гибернация). Все соединения за время сна мертвы, адаптер мог получить новый адрес:
+// ждём сеть и пересоздаём ядро (Restart закрывает и туннель, и клиентов Hysteria2). Защита WFP не снимается.
+func (a *App) onResume() {
+	a.mu.Lock()
+	if a.resuming || a.engine == nil {
+		a.mu.Unlock()
+		return
+	}
+	a.resuming = true
+	eng := a.engine
+	a.mu.Unlock()
+	defer func() { a.mu.Lock(); a.resuming = false; a.mu.Unlock() }()
+
+	logf("выход из сна: жду сеть")
+	var phys *physIface
+	var err error
+	for i := 0; i < 120; i++ {
+		if phys, err = defaultIface(); err == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if err != nil {
+		logf("выход из сна: сети нет — продолжу, когда появится (%v)", err)
+		return // появится маршрут — сработает watchNetwork -> onNetChange
+	}
+	time.Sleep(2 * time.Second) // DHCP/DNS адаптера доустанавливаются
+	a.mu.Lock()
+	a.phys = phys
+	a.mu.Unlock()
+	bindDialer(phys.Index)
+	if a.zap != nil {
+		a.zap.setIface(phys.Index)
+	}
+	logf("выход из сна: сеть есть (%s), пересоздаю ядро", phys.Name)
+	if err := eng.Restart(goIfaceName(phys.Index)); err != nil {
+		logf("выход из сна: restart: %v", err)
+		// второй шанс: туннель мог занять не сразу
+		time.Sleep(3 * time.Second)
+		if err := eng.Restart(goIfaceName(phys.Index)); err != nil {
+			logf("выход из сна: restart (повтор): %v", err)
+		}
+	}
 }
 
 func ifaceName(p *physIface) string {
