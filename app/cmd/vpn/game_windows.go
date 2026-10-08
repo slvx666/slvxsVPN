@@ -26,16 +26,10 @@ type gameMode struct {
 	stop   chan struct{}
 	logf   func(string, ...any)
 	onFlip func(off bool, iface string)
+	hold   time.Time // до этого момента сканирование не выключаем (сон/пробуждение: Wi-Fi должен спокойно подключиться)
 }
 
-// gameModeEnabled — выключено: отключение автонастройки Wi-Fi (netsh wlan autoconfig=no) при сне/гибернации
-// оставляло ПК «без Wi-Fi» после пробуждения (сети не видны, не подключается). Выигрыш — лишь реже скачки пинга.
-const gameModeEnabled = false
-
 func startGameMode(iface string, logf func(string, ...any), onFlip func(bool, string)) *gameMode {
-	if !gameModeEnabled {
-		return nil
-	}
 	g := &gameMode{iface: iface, stop: make(chan struct{}), logf: logf, onFlip: onFlip}
 	go g.loop()
 	return g
@@ -72,6 +66,9 @@ func (g *gameMode) loop() {
 		}
 		game := gameRunning()
 		g.mu.Lock()
+		if time.Now().Before(g.hold) {
+			game = "" // пауза: в этот момент автонастройка должна быть включена
+		}
 		if game != "" && !g.off {
 			if setWlanScan(g.iface, false) == nil {
 				g.off = true
@@ -85,6 +82,23 @@ func (g *gameMode) loop() {
 			g.onFlip(false, g.iface)
 		}
 		g.mu.Unlock()
+	}
+}
+
+// Release — перед сном/гибернацией: автонастройка Wi-Fi включается ВСЕГДА (иначе после пробуждения ПК не видит сети
+// и не подключается), и на d режим не включается снова — после пробуждения Wi-Fi успевает подключиться.
+func (g *gameMode) Release(d time.Duration) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.hold = time.Now().Add(d)
+	_ = setWlanScan(g.iface, true)
+	if g.off {
+		g.off = false
+		g.logf("game mode off (сон)")
+		g.onFlip(false, g.iface)
 	}
 }
 

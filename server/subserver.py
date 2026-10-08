@@ -77,6 +77,13 @@ def hy2_hop(cfg, ua):
     return cfg["hy2_hop"]
 
 
+# Windows: серверы EA/Respawn (Apex и др.) — напрямую; если напрямую недоступны, приложение само уходит в VPN.
+# (Эксперимент 2026-10-08: через Германию Apex не заходил в лобби — «не удалось подключиться к серверам EA».)
+APP_EA_WINDOWS = {"id": "ea", "mode": "direct", "domains": ["domain:ea.com", "domain:respawn.com", "domain:origin.com",
+                  "domain:eaanticheat.com", "domain:ea.pl"],
+                  "probes": [{"url": "https://accounts.ea.com/", "min_bytes": 0}]}
+
+
 def services_for(ua):
     import copy
     svcs = copy.deepcopy(APP_SERVICES)
@@ -84,6 +91,8 @@ def services_for(ua):
         for s in svcs:
             if s["id"] in APP_QUIC_DIRECT_ANDROID:
                 s["quic"] = "direct"
+    if "(windows)" in ua and os.path.exists(f"{BASE}/ea-direct"):
+        svcs.append(copy.deepcopy(APP_EA_WINDOWS))
     return svcs
 
 

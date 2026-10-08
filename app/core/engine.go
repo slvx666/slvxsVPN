@@ -526,13 +526,17 @@ func (e *Engine) transportLoop(ctx context.Context) {
 		if !anyOK {
 			wait = 3 * time.Second
 		} else if !tcpOK[e.target(swTCP)] || !udpOK[e.target(swUDP)] {
-			wait = 15 * time.Second // текущий протокол сбоит — интервал 15 с без спама сети
+			wait = 4 * time.Second // текущий протокол сбоит — проверяем часто: сбой после смены сети надо поймать быстро
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-e.kick:
 			next = map[string]time.Time{}
+			// новая сеть — история старой не годится (иначе упавший при смене сети протокол держится «по заслугам»)
+			for _, t := range tcpOrder {
+				tcp[t], udp[t] = &streak{}, &streak{}
+			}
 			e.setState(func(s *State) {
 				if s.State != "on" {
 					s.Detail = "Подбираю лучший путь"
@@ -625,6 +629,23 @@ func choose(order []string, st map[string]*streak, cur string) string {
 	rateOf := func(s *streak) float64 { r, _ := s.rate(); return r }
 	strong := func(s *streak) bool { r, n := s.rate(); return n >= 5 && r >= 0.95 && s.fail == 0 }
 	if c := st[cur]; c != nil && indexOf(order, cur) >= 0 {
+		// текущий молчит две проверки подряд — это не «потери на плохой сети», а обрыв (смена сети, перезапуск
+		// клиента): сразу уходим на тот, что отвечает прямо сейчас (приоритет, затем доля удачных)
+		// (на плохой сети, где все проходят через раз, это не срабатывает: там доли удач близки)
+		if c.fail >= 2 {
+			best, bestR := "", -1.0
+			for _, t := range order {
+				if t == cur || st[t].fail != 0 || !st[t].seen {
+					continue
+				}
+				if r := rateOf(st[t]); r > bestR {
+					best, bestR = t, r
+				}
+			}
+			if best != "" && (c.fail >= 4 || bestR >= rateOf(c)+0.3) {
+				return best
+			}
+		}
 		_, curN := c.rate()
 		for _, t := range order {
 			if t == cur {

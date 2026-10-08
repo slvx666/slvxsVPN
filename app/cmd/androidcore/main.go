@@ -397,6 +397,11 @@ func run(dataDir, libDir, sock string) {
 					os.Setenv("VPN_NETHANDLE", parts[0])
 					if prev != "" {
 						logf("сеть сменилась: %s -> %s (%s)", prev, parts[0], os.Getenv("VPN_NETKEY"))
+						// диагностика: файл «noreset» в папке журнала — не закрывать клиентов Hysteria2 при смене сети
+						if _, err := os.Stat(filepath.Join(os.Getenv("VPN_DIAG_DIR"), "noreset")); err == nil {
+							e.Kick()
+							continue
+						}
 						e.NetworkChanged()
 						continue
 					}

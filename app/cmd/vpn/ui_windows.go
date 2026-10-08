@@ -412,6 +412,10 @@ func wndProc(hwnd windows.Handle, msg uint32, wp, lp uintptr) uintptr {
 		w.quit()
 		return 0
 	case wmPowerBroadcast:
+		// PBT_APMSUSPEND (4): ПК засыпает — успеть вернуть автонастройку Wi-Fi (до сна есть ~2 с)
+		if wp == 4 && app != nil {
+			app.onSuspend()
+		}
 		// PBT_APMRESUMESUSPEND (7) / PBT_APMRESUMEAUTOMATIC (0x12): ПК проснулся (сон/гибернация)
 		if (wp == 7 || wp == 0x12) && app != nil {
 			go app.onResume()

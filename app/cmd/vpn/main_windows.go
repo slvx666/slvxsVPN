@@ -34,6 +34,7 @@ func logf(format string, a ...any) {
 	if logFile != nil {
 		fmt.Fprintf(logFile, time.Now().Format("15:04:05 ")+format+"\n", a...)
 	}
+	sinkWrite(fmt.Sprintf(format, a...))
 }
 
 // App связывает окно (WebView2), ядро Xray, встроенный zapret, игровой режим и настройки сети.
@@ -114,6 +115,7 @@ func main() {
 	}
 
 	app = &App{dataDir: dataDir, persist: loadPersist(dataDir), tuned: map[string]bool{}, st: core.State{State: "off"}}
+	setLogDir(app.persist.LogDir)
 	// прошлый запуск завершился во время игры (сбой/выключение) — вернуть Wi-Fi автонастройку
 	if app.persist.ScanOffIface != "" {
 		_ = setWlanScan(app.persist.ScanOffIface, true)
@@ -235,11 +237,30 @@ func (a *App) handle(id int, method, arg string) {
 		st := a.st
 		a.mu.Unlock()
 		stb, _ := json.Marshal(st)
-		a.reply(id, fmt.Sprintf(`{"sub":%v,"tariff":%s,"state":%s}`, sub, jsonStr(tariff), string(stb)))
+		a.reply(id, fmt.Sprintf(`{"sub":%v,"tariff":%s,"state":%s,"logDir":%s}`, sub, jsonStr(tariff), string(stb), jsonStr(logDirName())))
 	case "paste":
 		a.reply(id, jsonStr(clipboardText()))
 	case "addSub":
 		a.reply(id, a.addSub(arg))
+	case "logDir":
+		a.reply(id, "{}")
+		// диалог выбора папки — в потоке окна
+		a.win.dispatch(func() {
+			dir := pickFolder(a.win.hwnd, "Папка для журнала VPN")
+			if dir == "" {
+				return
+			}
+			a.persist.LogDir = dir
+			a.persist.save(a.dataDir)
+			setLogDir(dir)
+			logf("журнал: выбрана папка %s", dir)
+			a.win.eval("window.__logdir && window.__logdir(" + jsonStr(logDirName()) + ")")
+		})
+	case "logOff":
+		a.persist.LogDir = ""
+		a.persist.save(a.dataDir)
+		setLogDir("")
+		a.reply(id, "{}")
 	case "toggle":
 		if arg == "on" {
 			go a.connect()
@@ -449,7 +470,9 @@ func (a *App) connect() {
 	bindName := goIfaceName(phys.Index)
 	// диагностика: файл «debug» в папке данных — журнал соединений Xray (access.log): кто куда и через какой выход
 	accessLog := ""
+	xrayLevel := "warning"
 	if _, err := os.Stat(filepath.Join(a.dataDir, "debug")); err == nil {
+		xrayLevel = "info" // в журнале ошибок — имена доменов и причины обрывов
 		accessLog = filepath.Join(a.dataDir, "access.log")
 		if st, err := os.Stat(accessLog); err == nil && st.Size() > 16<<20 {
 			os.Remove(accessLog)
@@ -469,8 +492,9 @@ func (a *App) connect() {
 	}
 	eng := core.NewEngine(core.Options{
 		DataDir: a.dataDir, AssetDir: a.dataDir, TunName: tunName, BindIface: bindName,
-		Platform: "windows", LogLevel: "warning", ErrorLog: filepath.Join(a.dataDir, "xray.log"), AccessLog: accessLog,
+		Platform: "windows", LogLevel: xrayLevel, ErrorLog: filepath.Join(a.dataDir, "xray.log"), AccessLog: accessLog,
 		Bypass: bp, Logf: logf,
+		Event: func(m string) { sinkWrite("[ядро] " + m) },
 		NetKey: func() string {
 			a.mu.Lock()
 			ph := a.phys
@@ -499,6 +523,29 @@ func (a *App) connect() {
 	}
 	logf("подключение: готово (+%v)", time.Since(t0).Round(time.Millisecond))
 	a.watcher = watchNetwork(a.onNetChange)
+	go a.snapshots(eng)
+}
+
+// snapshots — раз в минуту строка состояния в журнал в папке пользователя (сеть, протоколы, пинг).
+func (a *App) snapshots(eng *core.Engine) {
+	for eng.Running() {
+		time.Sleep(60 * time.Second)
+		if !eng.Running() {
+			return
+		}
+		st := eng.State()
+		a.mu.Lock()
+		ph := a.phys
+		a.mu.Unlock()
+		net := "?"
+		if ph != nil {
+			net = ph.Name
+			if ph.WiFi {
+				net += " (Wi-Fi)"
+			}
+		}
+		sinkWrite(fmt.Sprintf("[прилож] снимок состояние=%s tcp=%s udp=%s пинг=%dмс сеть=%s обход=%s", st.State, st.TCP, st.UDP, st.PingMs, net, st.Bypass))
+	}
 }
 
 // Running — ядро запущено (для фоновых диагностических циклов).
@@ -617,8 +664,21 @@ func (a *App) onGameFlip(off bool, iface string) {
 
 // onResume — ПК проснулся (сон/гибернация). Все соединения за время сна мертвы, адаптер мог получить новый адрес:
 // ждём сеть и пересоздаём ядро (Restart закрывает и туннель, и клиентов Hysteria2). Защита WFP не снимается.
+func (a *App) onSuspend() {
+	a.mu.Lock()
+	gm := a.gm
+	a.mu.Unlock()
+	gm.Release(3 * time.Minute)
+	logf("сон: автонастройка Wi-Fi возвращена")
+}
+
 func (a *App) onResume() {
 	a.mu.Lock()
+	if a.gm != nil {
+		a.gm.mu.Lock()
+		a.gm.hold = time.Now().Add(2 * time.Minute)
+		a.gm.mu.Unlock()
+	}
 	if a.resuming || a.engine == nil {
 		a.mu.Unlock()
 		return

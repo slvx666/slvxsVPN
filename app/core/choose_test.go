@@ -87,3 +87,35 @@ func TestChooseLossyStays(t *testing.T) {
 		t.Fatalf("too many switches on lossy net: %d", switches)
 	}
 }
+
+// смена сети: история сброшена — первый же сбой текущего при живом запасном даёт переход;
+// при длинной хорошей истории один-два сбоя терпим, четыре подряд — обрыв, уходим
+func TestChooseFailoverAfterNetSwitch(t *testing.T) {
+	order := []string{tagHy2, tagVLESS, tagXHTTP}
+	st := map[string]*streak{tagHy2: {}, tagVLESS: {}, tagXHTTP: {}}
+	upd(st[tagHy2], false)
+	upd(st[tagVLESS], true)
+	upd(st[tagXHTTP], true)
+	if got := choose(order, st, tagHy2); got != tagVLESS {
+		t.Fatalf("свежая история: уходим на vless, got %s", got)
+	}
+
+	st = map[string]*streak{tagHy2: {}, tagVLESS: {}, tagXHTTP: {}}
+	for i := 0; i < 10; i++ {
+		upd(st[tagHy2], true)
+		upd(st[tagVLESS], i%2 == 0)
+		upd(st[tagXHTTP], i%2 == 0)
+	}
+	for i := 1; i <= 4; i++ {
+		upd(st[tagHy2], false)
+		upd(st[tagVLESS], true)
+		upd(st[tagXHTTP], true)
+		got := choose(order, st, tagHy2)
+		if i <= 1 && got != tagHy2 {
+			t.Fatalf("%d сбой при хорошей истории — держим hy2, got %s", i, got)
+		}
+		if i == 4 && got == tagHy2 {
+			t.Fatalf("4 сбоя подряд — должны уйти, got %s", got)
+		}
+	}
+}

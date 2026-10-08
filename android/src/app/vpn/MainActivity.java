@@ -36,7 +36,7 @@ import java.nio.charset.StandardCharsets;
 /** Единственный экран: WebView с интерфейсом (assets/index.html). Вся логика — во встроенном ядре и службе. */
 public class MainActivity extends Activity {
     private WebView web;
-    private static final int REQ_VPN = 1, REQ_NOTIF = 2;
+    private static final int REQ_VPN = 1, REQ_NOTIF = 2, REQ_LOG = 3;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -170,6 +170,7 @@ public class MainActivity extends Activity {
             JSONObject o = new JSONObject();
             o.put("sub", hasProfile());
             o.put("tariff", Prefs.tariff(this));
+            o.put("logDir", LogSink.dirName(this));
             o.put("state", new JSONObject(Bus.last()));
             final String js = "window.__hydrate && window.__hydrate(" + o + ")";
             runOnUiThread(() -> web.evaluateJavascript(js, null));
@@ -183,6 +184,7 @@ public class MainActivity extends Activity {
                     JSONObject o = new JSONObject();
                     o.put("sub", hasProfile());
                     o.put("tariff", Prefs.tariff(this));
+                    o.put("logDir", LogSink.dirName(this));
                     o.put("state", new JSONObject(Bus.last()));
                     resolve(id, o.toString());
                     break;
@@ -195,6 +197,23 @@ public class MainActivity extends Activity {
                     JSONObject r = Core.fetch(dataDir(), libDir(), arg);
                     if (r.optBoolean("ok")) Prefs.setTariff(this, r.optString("tariff"));
                     resolve(id, r.toString());
+                    break;
+                }
+                case "logDir": {
+                    // системный выбор папки: доступ сохраняется после перезапуска; ответ — через window.__logdir
+                    runOnUiThread(() -> {
+                        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                        pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+                        try { startActivityForResult(pick, REQ_LOG); }
+                        catch (Exception e) { toast("На этом телефоне нет выбора папки"); }
+                    });
+                    resolve(id, "{}");
+                    break;
+                }
+                case "logOff": {
+                    Prefs.clearLog(this);
+                    resolve(id, "{}");
                     break;
                 }
                 case "toggle": {
@@ -239,6 +258,23 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_LOG) {
+            if (res == RESULT_OK && data != null && data.getData() != null) {
+                final android.net.Uri u = data.getData();
+                try {
+                    getContentResolver().takePersistableUriPermission(u,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                } catch (Exception ignore) {}
+                Prefs.setLogTree(this, u.toString());
+                new Thread(() -> {
+                    Trouble.log(this, "журнал: выбрана папка для сохранения");
+                    LogSink.sync(this);
+                    final String name = LogSink.dirName(this);
+                    runOnUiThread(() -> web.evaluateJavascript("window.__logdir && window.__logdir(" + JSONObject.quote(name) + ")", null));
+                }).start();
+            }
+            return;
+        }
         if (req == REQ_VPN) {
             if (res == RESULT_OK) launchService();
             else Bus.post("{\"state\":\"off\",\"error\":\"Нужно разрешить подключение VPN\"}");

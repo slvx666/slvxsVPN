@@ -75,7 +75,7 @@ public class VpnServiceImpl extends VpnService {
                     ConnectivityManager cm = getSystemService(ConnectivityManager.class);
                     if (cm != null) {
                         Network act = physical(cm);
-                        if (act != null) setUnderlyingNetworks(new Network[]{act});
+                        if (act != null) setUnder(new Network[]{act});
                     }
                 } catch (Exception ignore) {}
             }
@@ -206,33 +206,65 @@ public class VpnServiceImpl extends VpnService {
     }
 
     private long netHandle = -1;
+    private ConnectivityManager.NetworkCallback defCb;
 
-    /** Сменилась реальная сеть: сообщить системе (нижележащая сеть VPN) и ядру. Свой VPN не считается. */
-    private synchronized void netChanged() {
+    /** Диагностика: файл «nounder» в папке журнала отключает setUnderlyingNetworks (VPN следует за сетью по умолчанию). */
+    private void setUnder(Network[] n) {
+        if (Build.VERSION.SDK_INT < 22) return;
+        try {
+            java.io.File d = getExternalFilesDir(null);
+            if (d != null && new java.io.File(d, "nounder").exists()) return;
+            setUnderlyingNetworks(n);
+        } catch (Exception ignore) {}
+    }
+    private final android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+
+    /** Сменилась реальная сеть: сообщить системе (нижележащая сеть VPN) и ядру. Свой VPN не считается.
+     *  hint — сеть по умолчанию для нашего приложения (оно исключено из VPN, значит это именно физическая сеть). */
+    private synchronized void netChanged(Network hint, String why) {
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
-        Network p = physical(cm);
+        Network p = null;
+        if (hint != null) {
+            NetworkCapabilities c = cm.getNetworkCapabilities(hint);
+            if (c != null && !c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) p = hint;
+        }
+        if (p == null) p = physical(cm);
         if (Build.VERSION.SDK_INT >= 22) {
-            try { setUnderlyingNetworks(p != null ? new Network[]{p} : null); } catch (Exception ignore) {}
+            setUnder(p != null ? new Network[]{p} : null);
         }
         long h = p == null ? 0 : p.getNetworkHandle();
         if (h == netHandle) return;
         netHandle = h;
-        Trouble.log(this, "СМЕНА СЕТИ " + Trouble.snapshot(this));
+        Trouble.log(this, "СМЕНА СЕТИ (" + why + ") " + Trouble.snapshot(this));
         if (p != null) toCore("net " + h + " " + netKey(cm, p));
+    }
+
+    private void netChangedSoon(String why) {
+        netChanged(null, why);
+        // подстраховка: система может обновить список сетей с задержкой после потери Wi-Fi
+        main.postDelayed(() -> { if (running) netChanged(null, why + "+0.5с"); }, 500);
+        main.postDelayed(() -> { if (running) netChanged(null, why + "+3с"); }, 3000);
     }
 
     private void registerNetCallback() {
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         if (cm == null) return;
         netCb = new ConnectivityManager.NetworkCallback() {
-            @Override public void onAvailable(Network n) { netChanged(); }
-            @Override public void onCapabilitiesChanged(Network n, NetworkCapabilities caps) { netChanged(); }
-            @Override public void onLost(Network n) { netChanged(); }
+            @Override public void onAvailable(Network n) { netChangedSoon("доступна"); }
+            @Override public void onCapabilitiesChanged(Network n, NetworkCapabilities caps) { netChanged(null, "параметры"); }
+            @Override public void onLost(Network n) { Trouble.log(VpnServiceImpl.this, "сеть потеряна " + n.getNetworkHandle()); netChangedSoon("потеряна"); }
         };
         try {
             cm.registerNetworkCallback(new android.net.NetworkRequest.Builder()
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), netCb);
         } catch (Exception ignore) {}
+        // сеть по умолчанию для нашего приложения (исключено из VPN) — то, что система выбрала сейчас
+        defCb = new ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(Network n) { netChanged(n, "по умолчанию"); }
+            @Override public void onLost(Network n) { netChangedSoon("по умолчанию потеряна"); }
+        };
+        try { cm.registerDefaultNetworkCallback(defCb); } catch (Exception ignore) {}
     }
 
     /** Устойчивый «отпечаток» сети (номер сети Android меняется при каждом переподключении):
@@ -268,12 +300,15 @@ public class VpnServiceImpl extends VpnService {
 
     private Thread snaps;
 
-    /** Снимок состояния устройства раз в минуту (и при каждой смене сети — см. netChanged). */
+    /** Раз в минуту — снимок состояния устройства в журнал; каждые 15 с — копия новых строк в папку пользователя. */
     private void startSnapshots() {
         snaps = new Thread(() -> {
+            int tick = 0;
             while (running) {
-                try { Thread.sleep(60000); } catch (InterruptedException e) { return; }
-                if (running) Trouble.log(this, "снимок " + Trouble.snapshot(this));
+                try { Thread.sleep(15000); } catch (InterruptedException e) { return; }
+                if (!running) return;
+                if (++tick % 4 == 0) Trouble.log(this, "снимок " + Trouble.snapshot(this));
+                LogSink.sync(this);
             }
         }, "vpn-snap");
         snaps.setDaemon(true);
@@ -284,12 +319,14 @@ public class VpnServiceImpl extends VpnService {
         if (running) Trouble.log(this, "=== VPN выключается " + Trouble.snapshot(this));
         running = false;
         if (snaps != null) snaps.interrupt();
+        new Thread(() -> LogSink.sync(this), "vpn-logflush").start();
         Prefs.setWantOn(this, false);
         if (Build.VERSION.SDK_INT >= 22) {
-            try { setUnderlyingNetworks(null); } catch (Exception ignore) {}
+            setUnder(null);
         }
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         if (cm != null && netCb != null) { try { cm.unregisterNetworkCallback(netCb); } catch (Exception ignore) {} netCb = null; }
+        if (cm != null && defCb != null) { try { cm.unregisterNetworkCallback(defCb); } catch (Exception ignore) {} defCb = null; }
         toCore("stop");
         final Process p = core; core = null; coreIn = null;
         new Thread(() -> {

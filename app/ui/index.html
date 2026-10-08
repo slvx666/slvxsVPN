@@ -42,6 +42,9 @@ body{display:flex;align-items:center;justify-content:center;padding:env(safe-are
 .btn:active{transform:scale(.97)}
 .btn.primary{background:var(--card2)}
 .btn.quiet{background:transparent;color:var(--dim);border-color:var(--line)}
+.logrow{display:flex;gap:8px;margin-top:8px}
+.btn.small{font-size:12px;padding:8px 10px;color:var(--dim);background:transparent;border-color:var(--line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.btn.small.x{width:44px;flex:none}
 .btn[disabled]{opacity:.6;pointer-events:none}
 .edit{display:flex;flex-direction:column;gap:8px}
 .edit .row{display:flex;gap:8px}
@@ -127,19 +130,24 @@ function frame(now){
 }
 requestAnimationFrame(frame);
 
+let logDir='';
+window.__logdir=n=>{ logDir=n||''; if(!edit) renderTop(); };
 function err(m){ $('err').textContent=m||''; }
 
 function renderTop(){
   let h;
   if(edit) h=`<div class="edit"><input id="in" placeholder="https://…/sub/…" spellcheck="false" autocomplete="off" inputmode="url"><div class="row"><button class="btn" id="paste">Вставить</button><button class="btn primary" id="ok">Готово</button></div></div>`;
   else if(!sub) h=`<button class="btn primary" id="add">${icoLink}<span>Добавить подписку</span></button>`;
-  else h=`<button class="btn quiet" id="add">${icoOk}<span>Подписка · ${esc(tariff||'активна')}</span></button>`;
+  else h=`<button class="btn quiet" id="add">${icoOk}<span>Подписка · ${esc(tariff||'активна')}</span></button>`+
+    `<div class="logrow"><button class="btn small" id="logb">${logDir?('Журнал → '+esc(logDir)):'Журнал диагностики: выкл'}</button>${logDir?'<button class="btn small x" id="logx" aria-label="Выключить журнал">×</button>':''}</div>`;
   const t=$('top'); t.style.opacity=0;
   setTimeout(()=>{t.innerHTML=h; t.style.opacity=1;
     if($('add')) $('add').onclick=()=>{edit=true;err('');renderTop();};
     if($('paste')) $('paste').onclick=async()=>{const v=await native.call('paste'); if(v){$('in').value=v.trim(); err('');}};
     if($('in')){ $('in').oninput=()=>err(''); $('in').onkeydown=e=>{if(e.key==='Enter')$('ok').click(); if(e.key==='Escape'&&sub){edit=false;err('');renderTop();}}; }
     if($('ok')) $('ok').onclick=done;
+    if($('logb')) $('logb').onclick=async()=>{ await native.call('logDir'); }; // ответ придёт в __logdir, когда пользователь выберет папку
+    if($('logx')) $('logx').onclick=async()=>{ await native.call('logOff'); logDir=''; renderTop(); };
   },300);
 }
 async function done(){
@@ -196,7 +204,7 @@ window.__state=st=>{
 };
 window.__sub=s=>{ sub=!!s.sub; tariff=s.tariff||''; if(!edit) renderTop(); render(true); };
 // прямая доставка данных приложением (после загрузки страницы) — на случай, если запрос init потерялся
-window.__hydrate=d=>{ try{ if(!d) return; sub=!!d.sub; tariff=d.tariff||''; if(d.state){conn=d.state.state||'off';detail=d.state.detail||'';} if(!edit) renderTop(); render(true); document.getElementById('app').classList.add('ready'); }catch(e){} };
+window.__hydrate=d=>{ try{ if(!d) return; sub=!!d.sub; tariff=d.tariff||''; logDir=d.logDir||''; if(d.state){conn=d.state.state||'off';detail=d.state.detail||'';} if(!edit) renderTop(); render(true); document.getElementById('app').classList.add('ready'); }catch(e){} };
 
 const pw=$('pw');
 const press=()=>{pw.classList.add('press');}, release=()=>{pw.classList.remove('press');};
@@ -218,7 +226,7 @@ async function hydrate(){
   try{
     const r=await native.call('init');
     if(r&&typeof r==='object'){
-      sub=!!r.sub; tariff=r.tariff||'';
+      sub=!!r.sub; tariff=r.tariff||''; logDir=r.logDir||'';
       if(r.state){ conn=r.state.state||'off'; detail=r.state.detail||''; if(r.state.error) err(r.state.error); }
       if(!edit) renderTop();
       render(true);

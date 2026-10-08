@@ -72,6 +72,12 @@ func watchMode(pid uint32) {
 		windows.CloseHandle(h)
 		st := loadPersist(dataDir)
 		log("основной процесс завершился, код " + itoa(int(code)))
+		if st.ScanOffIface != "" { // игровой режим выключил автонастройку Wi-Fi — вернуть при любом выходе
+			_ = setWlanScan(st.ScanOffIface, true)
+			st.ScanOffIface = ""
+			st.save(dataDir)
+			log("автонастройка Wi-Fi возвращена")
+		}
 		if code == 0 || code == 1 || !st.WantOn {
 			return
 		}
