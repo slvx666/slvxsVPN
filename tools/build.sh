@@ -18,8 +18,9 @@ mkdir -p "$ROOT/releases"
 case "$kind" in
 apk)
 	ssh "$SERVER" "NOPUB=$nopub /root/build/build-apk.sh $ver" | tail -2 || die "сборка APK"
-	scp -q "$SERVER:/root/build/android/bin/VPN.apk" "$ROOT/releases/VPN-$ver.apk"
-	echo "→ releases/VPN-$ver.apk" ;;
+	scp -q "$SERVER:/root/build/android/bin/VPN.apk" "$ROOT/releases/SewrGate-$ver.apk"
+	cp -f "$ROOT/releases/SewrGate-$ver.apk" "$ROOT/releases/SewrGate.apk"
+	echo "→ releases/SewrGate-$ver.apk" ;;
 apk-debug)
 	ssh "$SERVER" "DEBUG=1 NOPUB=1 /root/build/build-apk.sh $ver" | tail -2 || die "сборка APK"
 	scp -q "$SERVER:/root/build/android/bin/VPN.apk" "$ROOT/releases/VPN-$ver-debug.apk"
