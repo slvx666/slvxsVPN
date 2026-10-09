@@ -123,6 +123,15 @@ func (e *Engine) buildConfig() obj {
 	if len(p.DirectDomains) > 0 {
 		rules = append(rules, obj{"domain": p.DirectDomains, "outboundTag": tagDirect})
 	}
+	if e.opt.Platform != "android" {
+		// Игры (Apex Legends, CS2, Dota 2) и античит на ПК — напрямую мимо VPN
+		gameProcs := []string{
+			"r5apex", "r5apex_dx12",
+			"EasyAntiCheat", "EasyAntiCheat_EOS", "EAAntiCheat.GameServiceLauncher",
+			"cs2", "dota2",
+		}
+		rules = append(rules, obj{"process": gameProcs, "outboundTag": tagDirect})
+	}
 	for _, s := range p.Services {
 		if len(s.Domains) > 0 {
 			// QUIC сервиса по умолчанию не пускаем (приложение сразу уходит на TCP — его обходит zapret/ByeDPI);
@@ -138,6 +147,10 @@ func (e *Engine) buildConfig() obj {
 	rules = append(rules,
 		// QUIC через туннель не пускаем: браузер сразу уходит на TCP — через VLESS это быстрее и стабильнее
 		obj{"network": "udp", "port": "443", "outboundTag": tagBlock},
+		// Игровые порты UDP (Apex QoS 7770, Steam SDR 27000-27200, игровые серверы Respawn 37000-40000) — напрямую
+		obj{"network": "udp", "port": "7770", "outboundTag": tagDirect},
+		obj{"network": "udp", "port": "27000-27200", "outboundTag": tagDirect},
+		obj{"network": "udp", "port": "37000-40000", "outboundTag": tagDirect},
 		// российские IP по UDP (игровые серверы и т.п.) — напрямую. Для TCP нельзя: у YouTube/Apple/TikTok есть
 		// CDN-узлы в РФ с российскими IP — они ушли бы напрямую и попали под замедление
 		obj{"network": "udp", "ip": []string{"geoip:ru"}, "outboundTag": tagDirect},

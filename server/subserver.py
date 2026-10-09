@@ -35,7 +35,10 @@ APP_SERVICES = [
 # напрямую: российские сайты и сервисы; заблокированные сайты в зоне .ru (ru-blocked-ru) — через VPN
 APP_DIRECT = ["domain:ru", "domain:su", "domain:xn--p1ai", "geosite:category-ru", "geosite:category-gov-ru",
               "geosite:ru-available-only-inside"]
-APP_BLOCKED = ["geosite:ru-blocked-ru", "domain:discord.media"]
+# Twitch: API/сообщения/чат через ByeDPI рвутся (видео — чёрный экран) — их через VPN; поток (usher, ttvnw, live-video) напрямую
+APP_TWITCH_API = ["full:gql.twitch.tv", "full:hermes.twitch.tv", "full:passport.twitch.tv", "full:irc-ws.chat.twitch.tv",
+                   "domain:playlist.ttvnw.net", "domain:hls.ttvnw.net", "domain:hls.live-video.net"]
+APP_BLOCKED = ["geosite:ru-blocked-ru", "domain:discord.media"] + APP_TWITCH_API
 # Android: QUIC этих сервисов — напрямую (TCP через ByeDPI на каждое соединение ждёт повтора ~0.5 с;
 # приложение YouTube сначала пробует QUIC). ПК не трогаем: там zapret и TCP быстрые.
 APP_QUIC_DIRECT_ANDROID = {"youtube"}
@@ -194,10 +197,19 @@ class H(BaseHTTPRequestHandler):
             # файлы приложения: гео-базы, zapret, сами приложения (только из манифеста)
             name = action[5:]
             try:
-                ok = name in json.load(open(f"{APP}/manifest.json"))
+                man = json.load(open(f"{APP}/manifest.json"))
             except Exception:
-                ok = False
-            if not ok or not os.path.isfile(f"{APP}/files/{name}"):
+                man = {}
+            if name not in man:
+                if name == "SewrGate.exe" and "VPN.exe" in man:
+                    name = "VPN.exe"
+                elif name == "VPN.exe" and "SewrGate.exe" in man:
+                    name = "SewrGate.exe"
+                elif name == "SewrGate.apk" and "VPN.apk" in man:
+                    name = "VPN.apk"
+                elif name == "VPN.apk" and "SewrGate.apk" in man:
+                    name = "SewrGate.apk"
+            if name not in man or not os.path.isfile(f"{APP}/files/{name}"):
                 self.send_error(404)
                 return
             size = os.path.getsize(f"{APP}/files/{name}")
@@ -272,7 +284,8 @@ class H(BaseHTTPRequestHandler):
                 man = {}
             apps = "".join(
                 f'<a class="b app" href="{url}/file/{n}">{label}</a>'
-                for n, label in (("VPN.apk", "Приложение VPN для Android"), ("VPN.exe", "Приложение VPN для Windows"))
+                for n, label in (("SewrGate.apk", "Приложение SewrGate для Android"), ("SewrGate.exe", "Приложение SewrGate для Windows"),
+                                 ("VPN.apk", "Приложение SewrGate для Android"), ("VPN.exe", "Приложение SewrGate для Windows"))
                 if n in man)
             if apps:
                 apps += ('<p class="sub" style="margin-top:4px">В приложении: «Добавить подписку» → «Вставить» → '

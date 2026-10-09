@@ -124,7 +124,7 @@ func main() {
 	}
 
 	showAtStart := !hasArg("--tray")
-	win, err := newWindow("VPN", showAtStart, app.onMsg)
+	win, err := newWindow("SewrGate", showAtStart, app.onMsg)
 	if err != nil {
 		messageBox("Не удалось создать окно приложения.", false)
 		return
@@ -321,17 +321,17 @@ func (a *App) updateTray() {
 	a.mu.Lock()
 	st := a.st
 	a.mu.Unlock()
-	tip := "VPN — не подключено"
+	tip := "SewrGate — не подключено"
 	on := false
 	switch st.State {
 	case "on":
 		on = true
-		tip = "VPN — подключено"
+		tip = "SewrGate — подключено"
 		if st.Detail != "" {
-			tip = "VPN — " + st.Detail
+			tip = "SewrGate — " + st.Detail
 		}
 	case "connecting":
-		tip = "VPN — подключаюсь…"
+		tip = "SewrGate — подключаюсь…"
 	}
 	if a.win != nil {
 		a.win.dispatch(func() { a.win.traySet(on, tip) })

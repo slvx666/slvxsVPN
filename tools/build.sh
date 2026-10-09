@@ -31,6 +31,8 @@ exe)
 		ssh "$SERVER" "/root/build/build-exe.sh $ver" | tail -1 || die "сборка EXE"
 	fi
 	scp -q "$SERVER:/root/build/VPN.exe" "$ROOT/releases/VPN-$ver.exe"
-	echo "→ releases/VPN-$ver.exe" ;;
+	scp -q "$SERVER:/root/build/VPN.exe" "$ROOT/releases/SewrGate-$ver.exe"
+	cp -f "$ROOT/releases/SewrGate-$ver.exe" "$ROOT/releases/SewrGate.exe"
+	echo "→ releases/SewrGate-$ver.exe" ;;
 *) die "неизвестно: $kind" ;;
 esac

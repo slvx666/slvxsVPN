@@ -18,6 +18,8 @@ push_app() {
 	scp -q "$ROOT/xray-src/app/dns/fakedns/fake.go" "$SERVER:/root/build/xray-src/app/dns/fakedns/fake.go"
 	scp -q "$ROOT/xray-src/proxy/tun/handler.go" "$SERVER:/root/build/xray-src/proxy/tun/handler.go"
 	scp -q "$ROOT/xray-src/proxy/tun/tun_windows.go" "$SERVER:/root/build/xray-src/proxy/tun/tun_windows.go"
+	scp -q "$ROOT/xray-src/app/router/condition.go" "$SERVER:/root/build/xray-src/app/router/condition.go"
+	scp -q "$ROOT/xray-src/common/net/find_process_windows.go" "$SERVER:/root/build/xray-src/common/net/find_process_windows.go"
 }
 push_android() {
 	echo "→ android"

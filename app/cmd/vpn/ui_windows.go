@@ -475,7 +475,7 @@ func messageBox(text string, yesNo bool) bool {
 	if yesNo {
 		flags = 0x04 | 0x20 // MB_YESNO|MB_ICONQUESTION
 	}
-	r, _, _ := pMessageBoxW.Call(0, uintptr(unsafe.Pointer(utf16(text))), uintptr(unsafe.Pointer(utf16("VPN"))), flags)
+	r, _, _ := pMessageBoxW.Call(0, uintptr(unsafe.Pointer(utf16(text))), uintptr(unsafe.Pointer(utf16("SewrGate"))), flags)
 	return r == 1 || r == 6
 }
 

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"net"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -26,6 +27,7 @@ type gameMode struct {
 	stop   chan struct{}
 	logf   func(string, ...any)
 	onFlip func(off bool, iface string)
+	down   time.Time // когда Wi-Fi пропал при выключенном сканировании (ждём переподключения)
 	hold   time.Time // до этого момента сканирование не выключаем (сон/пробуждение: Wi-Fi должен спокойно подключиться)
 }
 
@@ -55,19 +57,59 @@ func setWlanScan(iface string, on bool) error {
 	return cmd.Run()
 }
 
+// wifiUp — адаптер подключён к сети (OperStatus up).
+func wifiUp(iface string) bool {
+	ifc, err := net.InterfaceByName(iface)
+	return err == nil && ifc.Flags&net.FlagRunning != 0
+}
+
+func restartAdapter(iface string) {
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+		"Restart-NetAdapter -Name '"+strings.ReplaceAll(iface, "'", "''")+"' -Confirm:$false")
+	cmd.SysProcAttr = hiddenProc()
+	_ = cmd.Run()
+}
+
 func (g *gameMode) loop() {
-	t := time.NewTicker(5 * time.Second)
+	// раз в секунду: при выключенном сканировании нужно сразу заметить обрыв Wi-Fi — без автонастройки Windows
+	// сама НЕ переподключается («не видит Wi-Fi», 2026-10-09). Процессы перебираем раз в 5 с.
+	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	game, n := "", 0
 	for {
 		select {
 		case <-g.stop:
 			return
 		case <-t.C:
 		}
-		game := gameRunning()
 		g.mu.Lock()
-		if time.Now().Before(g.hold) {
-			game = "" // пауза: в этот момент автонастройка должна быть включена
+		if g.off && !wifiUp(g.iface) {
+			_ = setWlanScan(g.iface, true)
+			g.off = false
+			g.hold = time.Now().Add(2 * time.Minute)
+			g.down = time.Now()
+			g.logf("game mode off: Wi-Fi пропал, автонастройка включена")
+			g.onFlip(false, g.iface)
+		}
+		// Wi-Fi не вернулся за 25 с после обрыва во время игры — драйвер USB-адаптера завис
+		// (2026-10-09: «драйвер отключен», 0 сетей в эфире); перезапуск адаптера возвращает его.
+		if !g.down.IsZero() {
+			if wifiUp(g.iface) {
+				g.down = time.Time{}
+			} else if time.Since(g.down) > 25*time.Second {
+				g.down = time.Time{}
+				g.logf("Wi-Fi не вернулся — перезапуск адаптера")
+				go restartAdapter(g.iface)
+			}
+		}
+		g.mu.Unlock()
+		if n++; n%5 != 1 {
+			continue
+		}
+		game = gameRunning()
+		g.mu.Lock()
+		if time.Now().Before(g.hold) || !wifiUp(g.iface) {
+			game = "" // пауза или нет связи: автонастройка должна быть включена
 		}
 		if game != "" && !g.off {
 			if setWlanScan(g.iface, false) == nil {

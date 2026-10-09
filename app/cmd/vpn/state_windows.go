@@ -59,9 +59,11 @@ func setAutostart(on bool) {
 	defer k.Close()
 	if on {
 		if exe, err := os.Executable(); err == nil {
-			_ = k.SetStringValue("VPN", `"`+exe+`" --tray`)
+			_ = k.SetStringValue("SewrGate", `"`+exe+`" --tray`)
+			_ = k.DeleteValue("VPN")
 		}
 	} else {
+		_ = k.DeleteValue("SewrGate")
 		_ = k.DeleteValue("VPN")
 	}
 }

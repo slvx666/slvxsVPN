@@ -432,6 +432,7 @@ func (e *Engine) transportLoop(ctx context.Context) {
 	}
 	downRounds := 0
 	first := true
+	degraded := true // текущий выход не отвечал на прошлом круге: ответ приоритетного протокола переключает сразу
 	// протокол, который стабильно не проходит (дома VLESS рвут 9 из 10), проверяем раз в 3 мин, а не каждые
 	// 20 с: лишние оборванные соединения к серверу только привлекают внимание DPI. Смена сети — всё заново.
 	next := map[string]time.Time{}
@@ -458,7 +459,8 @@ func (e *Engine) transportLoop(ctx context.Context) {
 					e.opt.Logf("probe tcp %s: %v", t, err)
 				}
 				// как только любой протокол ответил на первом круге — подключаемся сразу, не дожидаясь остальных
-				if err == nil && first {
+				// (LTE после простоя: Hysteria2 отвечает со 2-го круга, а круг ждёт самый медленный из остальных ~25 с)
+				if err == nil && (first || (degraded && t == tcpOrder[0])) {
 					e.setTarget(swTCP, t)
 					e.markOn()
 				}
@@ -478,7 +480,7 @@ func (e *Engine) transportLoop(ctx context.Context) {
 				}
 				// первый круг: UDP сразу на Hysteria2, если он ответил (иначе «кто первый» — и UDP
 				// застревал на запасном протоколе); остальное решит choose() после круга
-				if err == nil && first && t == udpOrder[0] {
+				if err == nil && (first || degraded) && t == udpOrder[0] {
 					e.setTarget(swUDP, t)
 				}
 			}(t)
@@ -523,6 +525,7 @@ func (e *Engine) transportLoop(ctx context.Context) {
 				})
 			}
 		}
+		degraded = !tcpOK[e.target(swTCP)] || !udpOK[e.target(swUDP)]
 		wait := 20 * time.Second
 		if !anyOK {
 			wait = 3 * time.Second
@@ -534,6 +537,7 @@ func (e *Engine) transportLoop(ctx context.Context) {
 			return
 		case <-e.kick:
 			next = map[string]time.Time{}
+			degraded = true
 			// новая сеть — история старой не годится (иначе упавший при смене сети протокол держится «по заслугам»)
 			for _, t := range tcpOrder {
 				tcp[t], udp[t] = &streak{}, &streak{}
